@@ -188,7 +188,14 @@ def process_fits(filename, band):
     for source in sources:
         x, y = source['xcentroid'], source['ycentroid']
         fwhm = compute_fwhm(data, x, y)
-        if fwhm is not None:
+        # A width of zero is not a measurement, it is a detection that turned
+        # out to be nothing. It happens on a background-subtracted image where
+        # the local peak is a noise ripple: half of a peak of 0.006 is a
+        # meaningless threshold, only one pixel clears it, and the width
+        # between that pixel and itself is zero. Passing that on gives
+        # photutils a radius of zero and the run stops. Skip it instead - the
+        # source carries no signal worth measuring either way.
+        if fwhm is not None and np.isfinite(fwhm) and fwhm > 0:
             radius = APERTURE_SCALE * fwhm
             aperture = CircularAperture((x, y), r=radius)
             annulus_inner_radius = radius * ANNULUS_INNER_SCALE
