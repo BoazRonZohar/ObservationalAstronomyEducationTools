@@ -122,6 +122,7 @@ Usage: run it. Every question has a default; press Enter to accept it.
 """
 
 import os
+import time
 import numpy as np
 import pandas as pd
 from astropy.io import fits
@@ -161,12 +162,32 @@ def _ask(prompt, default, cast=str, upper=False):
     except Exception:
         return default
     
+# The Cantat-Gaudin membership catalogue is about 86 MB and takes a good few
+# seconds to arrive. It is needed twice - once to check the cluster's name and
+# once to pick out its members - so it is fetched once and kept.
+_CG_CATALOGUE = None
+
+
+def cantat_gaudin_members():
+    """The Cantat-Gaudin & Anders 2020 membership table, downloaded once."""
+    global _CG_CATALOGUE
+    if _CG_CATALOGUE is None:
+        print("Downloading the Cantat-Gaudin cluster catalogue "
+              "(Vizier J/A+A/640/A1, about 86 MB). This takes a few seconds "
+              "the first time, and is then reused for the rest of the run.",
+              flush=True)
+        t0 = time.time()
+        Vizier.ROW_LIMIT = -1
+        _CG_CATALOGUE = Vizier.get_catalogs("J/A+A/640/A1")[1]
+        print(f"   got it in {time.time() - t0:.0f} s - "
+              f"{len(set(_CG_CATALOGUE['Cluster'])):,} clusters, "
+              f"{len(_CG_CATALOGUE):,} member stars", flush=True)
+    return _CG_CATALOGUE
+
+
 def normalize_cluster_name(user_input: str) -> str:
     # --- Cluster name resolver ---
-    print("--- Please wait for Vizier catalog J/A+A/640/A1 to download ---")
-    Vizier.ROW_LIMIT = -1
-    cat = Vizier.get_catalogs("J/A+A/640/A1")
-    members_table = cat[1]
+    members_table = cantat_gaudin_members()
     catalog_clusters = set(members_table["Cluster"])
     messier_to_catalog = {
         "M6":   "NGC_6405", "M7":   "NGC_6475", "M11":  "NGC_6705", "M18":  "NGC_6613",
@@ -290,7 +311,19 @@ def run_photometry(filename, band):
     positions = [(float(r['xcentroid']), float(r['ycentroid'])) for r in tbl]
 
     rows = []
-    for (x, y) in positions:
+    # A frame can hold thousands of sources and each one is measured on its
+    # own, so this is where a run goes quiet for a while. Report progress on
+    # one line that rewrites itself, so it is clear the run is alive.
+    n_total = len(positions)
+    # About ten updates whatever the count, each on its own line. A carriage
+    # return that rewrites one line looks tidier in a terminal, but Spyder's
+    # console does not always honour it and then prints every update on one
+    # very long line - which is worse than a few extra lines.
+    step = max(1, n_total // 10)
+    print(f"Measuring {n_total:,} sources in the {band} image...", flush=True)
+    for i, (x, y) in enumerate(positions, 1):
+        if i % step == 0 or i == n_total:
+            print(f"   {i:,} of {n_total:,}", flush=True)
         fwhm_star = estimate_fwhm_moments(data, x, y, box=15, r_bg_in=8, r_bg_out=12)
         if not np.isfinite(fwhm_star) or fwhm_star <= 0:
             continue
@@ -442,11 +475,9 @@ def get_cluster_members(cluster_name, fits_file, cluster_type="O",
     w = WCS(hdr)
 
     if cluster_type == "O":
-        # Open cluster: query Cantat-Gaudin & Anders 2020 catalog
-        Vizier.ROW_LIMIT = -1
-        catalog_id = "J/A+A/640/A1"
-        result = Vizier.get_catalogs(catalog_id)
-        members_table = result[1]
+        # Open cluster: Cantat-Gaudin & Anders 2020, already in memory from
+        # the name check rather than downloaded a second time
+        members_table = cantat_gaudin_members()
         cluster_members = members_table[members_table["Cluster"] == cluster_name]
 
         if len(cluster_members) == 0:
