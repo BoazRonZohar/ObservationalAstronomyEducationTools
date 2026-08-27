@@ -1,0 +1,21 @@
+# Store everything with LF inside the repository, whatever the machine that
+# committed it uses. Without this, a file edited on Windows and then on a Mac
+# shows up as "every line changed".
+* text=auto eol=lf
+
+# The planning tools carry their star catalogue inline, on a single very long
+# line, so that the page keeps working when it is opened straight off the disk
+# with no server. Two consequences, handled here:
+#
+#   linguist-vendored  keeps GitHub's language bar showing Python, which is
+#                      what this project actually is, rather than HTML.
+#   -diff              stops git from trying to render a diff of a 2.9 MB line,
+#                      which is unreadable and slow.
+#
+Observation_Planning/*.html linguist-vendored
+Observation_Planning/*.html -diff
+
+# FITS is binary, in case one ever slips past .gitignore
+*.fits binary
+*.fit  binary
+*.fts  binary

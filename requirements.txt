@@ -1,0 +1,23 @@
+# Packages the Python tools need.
+#     pip install -r requirements.txt
+#
+# The HTML planning tools in Observation_Planning/ need none of this — open them
+# in a browser.
+
+astropy
+numpy
+scipy
+pandas
+matplotlib
+photutils
+astroquery
+astroalign
+scikit-image
+requests
+openpyxl
+
+# Created by: Dr. Boaz Ron Zohar
+# Affiliation: Kinneret Observatory
+Member of the LCO Global Sky Partners programme
+# Part of Observational Astronomy Education Tools
+# https://github.com/BoazRonZohar/ObservationalAstronomyEducationTools

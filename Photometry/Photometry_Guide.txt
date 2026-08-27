@@ -1,0 +1,323 @@
+Photometry_Transit_Eclipse_Color_Plate_Solved.py — how to run it
+=====================================================================
+
+
+The normal run
+--------------
+
+    python Photometry_Transit_Eclipse_Color_Plate_Solved.py
+
+That is all. The script asks you for everything it needs:
+
+    frames folder           (the original colour frames, unprocessed)
+    output folder
+    k for the aperture      Enter accepts the default
+    k for the inner annulus Enter
+    k for the outer annulus Enter
+    camera gain             Enter
+    camera RON              Enter
+
+You do not need to remember any option. Everything listed below is a
+departure from the defaults, and the defaults are what tested correct.
+
+
+What the script does
+--------------------
+
+1. Finds every target in the folder by itself, from the object name recorded
+   in each frame's header.
+2. Throws out frames belonging to a different field. A frame taken after a
+   meridian flip is measured and marked, not thrown out.
+3. Splits the three colour channels in memory. No intermediate files, and no
+   need for Fitswork.
+4. Finds the star from the coordinates the telescope recorded, and picks 12
+   comparison stars.
+5. Measures every channel by two different positioning methods and compares
+   the two.
+6. Writes everything to a folder called Output_<star name>.
+
+
+What you get
+------------
+
+Inside Output_<star name>:
+
+    SUMMARY.txt              <- read this. The summary and the legend.
+    SUMMARY.csv                the same, for Excel
+    G_wcs_light_curve.png      the light curve
+    G_wcs_comp_C1..C12.png     a plot per comparison star
+    G_wcs.csv / .xlsx          the full measurements
+    G_anchor.csv               the second method, for comparison
+
+(G, R or B according to the channel)
+
+
+How to read the summary
+-----------------------
+
+    measurement noise       How much the comparison stars move against each
+                            other. This is the real noise. Measured on them
+                            and not on the target, because the target is the
+                            variable star.
+
+    target variation        How much the target actually moved.
+
+    eclipse depth           The depth of the eclipse, in magnitudes.
+
+    variation vs comparison The single number that tells you whether there is
+                            anything here.
+
+                            How much smooth change there is in your star's
+                            curve, against how much there is in the curves of
+                            the comparison stars, in exactly the same frames.
+
+                                below 1.2   The star does what every star in
+                                            the field does. No eclipse.
+                                1.2 to 2    Maybe. Not clean enough to claim.
+                                above 2     A real change.
+
+                            Why against the comparison stars and not against
+                            the noise: photometric noise does not behave like
+                            clean random noise. Airmass and transparency
+                            wander slowly, and a slow wander looks exactly
+                            like a shallow eclipse. The comparison stars
+                            suffer the same wander, so if they move like your
+                            star does, it is the atmosphere. If only your star
+                            moves, it is the star.
+
+                            The previous measure, the "change/noise ratio",
+                            was wrong. It divided the target's scatter by the
+                            comparison noise, and a faint star, or one blended
+                            with a neighbour, is noisier for reasons that are
+                            not change. Across six observations it declared
+                            five of them variable. One is variable.
+
+    reliability             RELIABLE = the two positioning methods agreed.
+                            CHECK    = they did not, and it is worth looking
+                                       before you rely on the result.
+
+
+Giving the script exact coordinates and your own radii
+------------------------------------------------------
+
+When you need this:
+
+  1. The coordinates in the header (OBJCTRA/OBJCTDEC) are where the telescope
+     thought it was pointing, not where the star is. In one observation that
+     was checked they sat 15.8 arcseconds from the star — 12.6 pixels. The
+     plate solution of the same frame, by contrast, was accurate to a third of
+     a pixel. When you have looked the star up in Aladin or Gaia and your
+     coordinates are better than the header's, it is better for the script to
+     use yours.
+
+  2. When there is a close companion. An aperture sized from the measured
+     width swallows both, and an annulus sized the same way can land on the
+     neighbour instead of on sky. Radii you chose by eye for this field beat
+     any rule.
+
+How: put a text file called target.txt in the frames folder, containing:
+
+    20:52:54.49 +37:03:58.9
+    Gaia DR3 1870866489773486080
+    aperture = 4.5
+    annulus  = 9 14
+
+Where to take the coordinates from — this matters:
+
+    From your own image in Aladin. Not from SIMBAD and not from Gaia
+    directly.
+
+    The reason: MaxIm crops 12 rows from every frame after PinPoint has
+    solved it, and does not update CRPIX2 in the header. So the WCS of the
+    frames is offset by 12 pixels relative to the pixels themselves. Measured
+    across six observations: a prediction from the header falls 6-17 pixels
+    from the star; after correcting CRPIX2 it falls within less than a pixel
+    in five out of six.
+
+    This is deliberately not corrected in the code. When you read a coordinate
+    off the image in Aladin, you read it through the same offset WCS that the
+    script uses. You are both on the same ruler, so you agree — whether or not
+    the ruler is accurate. Correcting only one side would move the star by
+    12 pixels.
+
+    So: confirm visually in SIMBAD where the star is, find it in Aladin on
+    your own image, and take the coordinate from there. A coordinate taken
+    straight from a catalogue will fall 12 pixels from the star.
+
+The first and second lines are exactly the format you already produce. The
+last two lines are optional, and their numbers are in pixels.
+
+What then happens:
+
+    The star is taken exactly at the coordinates you gave. The script does not
+    move it to the nearest patch of light — and that is the whole point with a
+    close pair: the nearest patch is precisely what you need to avoid. The
+    distance to the nearest light is still measured and printed, so you know
+    whether the coordinates landed where you meant, but nothing is done about
+    it.
+
+    The radii you gave apply to the variable star only, and stay fixed for the
+    whole run. The comparison stars carry on with their measured radii — which
+    is what a differential measurement needs. A different aperture on the
+    target shifts its zero point by a constant and nothing more.
+
+Important: without the file nothing changes. The run behaves exactly as
+before. This is deliberate — a correction is always fitted to one observation,
+and a correction applied to all of them would wreck the ones that already came
+out right. Tested: seven observations were run before and after the feature
+and the numbers came out identical.
+
+If the folder holds more than one target, the script uses the section whose
+name matches the target, and will not take a section belonging to another
+star. You can write several sections in one file, one below the other, each
+with its own name.
+
+Accepted filenames: target.txt, targets.txt, coordinates.txt, and a file whose
+name contains the Hebrew word for "star" (the original observing setup used
+one).
+
+
+Options, if you want to depart from the defaults
+------------------------------------------------
+
+All optional. Without any of them you get the correct behaviour.
+
+    --folder "path"           skip the question
+    --output_dir "path"       skip the question
+
+    --channels G              measure one channel instead of three.
+                              Three times faster. G is the quietest.
+
+    --n_comps 12              how many comparison stars to pick. 12 is the
+                              default.
+
+    --star_list "path"        use a star list you prepared in AIP4Win instead
+                              of the automatic choice.
+
+    --fixed_fwhm              go back to the old behaviour: one FWHM from the
+                              reference frame for the whole run, instead of a
+                              measurement per star per frame. It exists only
+                              so you can compare.
+
+    --no_auto_radii           do not scan for the best aperture size; use the
+    --k_aperture 1.5          value you give instead.
+
+    --gain 1.0  --ron 3.7     skip the questions
+
+
+A full example
+--------------
+
+    python Photometry_Transit_Eclipse_Color_Plate_Solved.py --folder "F:\Binary" --output_dir "D:\Results" --channels G
+
+
+What the script does not do
+---------------------------
+
+    It writes nothing into your data folders. It only reads from them.
+    It does not keep the separated colour channels - they are pulled out in
+    memory and discarded.
+    It does not touch any of your other scripts.
+
+
+If something fails
+------------------
+
+    "no plate solution in header"
+        The frames have been through a step that erased the header. Use the
+        original colour frames, not the ones after background subtraction.
+
+    "cannot identify the target"
+        The script could not identify the target with confidence. Give it a
+        star list with --star_list.
+
+    "agreement CHECK"
+        The two positioning methods did not agree. Look at SUMMARY.txt and at
+        the curve before you rely on the result.
+
+
+The other two tools
+-------------------
+
+    This script is self-contained. The measurement engine is merged into it,
+    so nothing has to sit beside it. The same is true of the other two.
+
+    Photometry_Transit_Eclipse_Mono_Plate_Solved.py
+        The same job for monochrome, single-filter frames — LCO BANZAI output
+        and anything similar. One filter, one image, no colour planes to split.
+        Like this script, it finds the target and the comparison stars by
+        itself, from the plate solution in each frame's header.
+
+    Photometry_Transit_Eclipse_Mono_Star_List.py
+        For monochrome frames that have NO plate solution — frames already
+        stacked or calibrated in AIP4Win, for instance, where the WCS was lost
+        along the way. Nothing can be found automatically without a plate
+        solution, so you mark the stars yourself, once, and hand the script a
+        list. See the next section.
+
+
+Giving the star-list tool its list
+----------------------------------
+
+Photometry_Transit_Eclipse_Mono_Star_List.py cannot look anything up: with no
+plate solution there are no sky coordinates in the frame, only pixels. So you
+mark the target and the comparison stars once, on one reference frame, and
+give it their pixel positions. From there the script follows the field from
+frame to frame by cross-correlating a template cut around the anchor star, so
+you only ever do this once per observation.
+
+It accepts the list in two forms, and works out by itself which one it has.
+
+**1. A CSV you write yourself** — four columns, with a header row. There is a
+ready one to copy next to this guide, star_list_example.csv:
+
+    name,x,y,role
+    V,1204.6,988.3,target
+    C1,842.1,1131.7,comp
+    C2,1477.9,742.4,comp
+    C3,655.3,668.0,comp
+
+    name    whatever you want to call the star. It appears in the output.
+    x, y    the pixel position on the reference frame.
+    role    exactly one row must be "target". Every other row is "comp".
+
+The positions do not have to be precise to the pixel — each star is
+re-centred with a local centroid before it is measured. Getting within two or
+three pixels is enough.
+
+**2. An AIP4Win "Star Data Tool" export** — the text report the tool writes
+out, with its X / Y / Sigma / FWHM table. Hand the script that file as it is;
+nothing needs editing. It has no names or roles in it, so the script assigns
+them by position in the table: the first star becomes the target (V) and the
+rest become C1, C2, C3 and so on. Put the variable first when you select the
+stars in AIP4Win, and the rest follows.
+
+This is usually the quicker route, because AIP4Win is already open — the
+frames came out of it — and you are picking the stars off the image by eye
+rather than reading coordinates off it and typing them into a file.
+
+Either file is passed the same way:
+
+    python Photometry_Transit_Eclipse_Mono_Star_List.py --star_list "path\to\list.csv"
+
+or leave the flag off and the script will ask for the path.
+
+A note on the anchor. The anchor is the star the whole field is tracked by —
+the template is cut around it and cross-correlated against every other frame.
+It is always one of the comparison stars, never the target, and by default it
+is the first comparison star you choose. Since everything else is positioned
+from it, pick one that is bright, isolated, and well inside the frame rather
+than near an edge. To name it yourself:
+
+    --anchor C3
+
+If the run reports large position scatter, or the frames stop matching part
+way through the night, a different anchor is the first thing to try.
+
+
+----------------------------------------------------------------------
+Created by: Dr. Boaz Ron Zohar
+Affiliation: Kinneret Observatory
+Member of the LCO Global Sky Partners programme
+Part of Observational Astronomy Education Tools
+https://github.com/BoazRonZohar/ObservationalAstronomyEducationTools

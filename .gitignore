@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+
+# Editors
+.spyproject/
+.idea/
+.vscode/
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Backups left by editors and by earlier versions of these scripts
+*.bak
+*.before_*
+bak/
+
+# Observation data and results. These are yours, they are large, and they do
+# not belong in a shared repository. The scripts write here by default.
+Output_*/
+Stars_Result/
+*.fits
+*.fit
+*.fts
+*.FITS
+*.FIT
+*.FTS
+
+# Run output
+LCO_Status_Report.txt
+*_tracks.txt
+*_light_curve.png
+*_comp_*.png
+stars_used.png
+SUMMARY.txt
+SUMMARY.csv
+*.xlsx
+
+# Observation requests carry a proposal code, target coordinates and windows.
+# Build them with the planning tools; do not commit them.
+*_request.json
+*_primary.json
+*_secondary.json
