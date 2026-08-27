@@ -389,6 +389,9 @@ def process_fits(filename, band):
         return []
     sources = sources[sources['peak'] > PEAK_MIN_STD * rms]
 
+    # The frame with the smooth galaxy light removed, used for measuring widths.
+    flat = data - bkg.background
+
     # Measuring every source takes the longest of any step here and used to run
     # in silence. Report about ten times, each on its own line: Spyder's console
     # does not reliably honour a carriage return, and a rewritten line then
@@ -403,7 +406,18 @@ def process_fits(filename, band):
         if i % step == 0 or i == n_total:
             print(f"   {i:,} of {n_total:,}", flush=True)
         x, y = source['xcentroid'], source['ycentroid']
-        fwhm = compute_fwhm(data, x, y)
+        # Width is measured on the frame with the diffuse light taken out, and
+        # the flux on the frame as it is.
+        #
+        # compute_fwhm asks which pixels sit above half of the brightest one. On
+        # a galaxy that question has no useful answer: inside a box on the disc
+        # the counts run from about 50 to 63, half of the peak is 31, and not one
+        # pixel falls below it - so every source came back as wide as the box,
+        # and its aperture was sized by the box rather than by itself. Taking the
+        # smooth galaxy light out first puts the floor back at zero, and half the
+        # peak becomes a threshold that separates the source from what surrounds
+        # it. A star on empty sky is unaffected: its floor was already zero.
+        fwhm = compute_fwhm(flat, x, y)
         # fwhm is None       - too close to the edge for a full measuring box
         # fwhm is zero/NaN   - a detection that turned out to be nothing. On a
         #                      background-subtracted image the local peak of a
