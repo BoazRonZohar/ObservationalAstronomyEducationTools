@@ -46,12 +46,19 @@ WHAT YOU NEED
 
 WHAT IT ASKS YOU
 
-  galaxy name                    used to name the output files
-  distance in Mpc                converts pixels to parsecs in the profile
-  galactic extinction A_V        corrects the brightness
-  colour excess E(B-V)           corrects the colour
+  galaxy name                    used to name the output files, and to look
+                                 the next two up
+  distance in Mpc                converts pixels to parsecs in the profile.
+                                 Offered from Cosmicflows-3 (Tully+ 2016)
+  colour excess E(B-V)           corrects brightness and colour for the dust
+                                 of our own galaxy. Offered from the Schlafly
+                                 & Finkbeiner (2011) dust maps via IRSA.
+                                 A_V is not asked for: it is 3.1 x E(B-V)
   the two FITS paths
   how many reference stars to calibrate against
+
+Every one of these has a default, and the two catalogue values are fetched by
+name. Press Enter to accept them or type your own.
 
 HOW IT WORKS
 
@@ -98,6 +105,9 @@ want to look at. Below, NAME stands for the galaxy name you typed.
     NAME_calibrated_photometry_CMD.png        colour-magnitude diagram
     NAME_V_sources.png                        the V image with every measured
                                               source circled
+    NAME_B_sources.png                        the same for B. Compare the two:
+                                              they should find the same things
+                                              in the same places
 
   Stage 3 - foreground stars removed
 
@@ -159,7 +169,8 @@ from astropy.io import fits
 import matplotlib.pyplot as plt
 from photutils.detection import DAOStarFinder
 from photutils.aperture import CircularAperture, CircularAnnulus, aperture_photometry
-from astropy.stats import sigma_clipped_stats
+from photutils.background import Background2D, MedianBackground
+from astropy.stats import sigma_clipped_stats, SigmaClip
 from scipy.ndimage import gaussian_filter
 from astropy.wcs import WCS
 from astroquery.vizier import Vizier
@@ -176,26 +187,59 @@ ANNULUS_OUTER_SCALE = 3
 FWHM_WINDOW_SIZE = 10
 
 # Detection parameters
-DAOFIND_FWHM = 10.0              # Expected size (FWHM in pixels) of detected light patches
-SIGMA_CLIP = 1.0                 # Sigma clipping level for background statistics
-DETECTION_THRESHOLD_SIGMA = 0.5  # Detection threshold in units of background sigma
-PEAK_MIN_STD = 1.0               # Minimum peak signal-to-noise ratio for a detection
+#
+# The width of a star is measured from your own frames, not assumed: see
+# estimate_seeing(). A fixed guess is the wrong thing here. DAOStarFinder
+# convolves the image with a kernel of the width it is given, so a star three
+# times narrower than that guess fails the sharpness test and is never found -
+# and it fails more often in the sharper of two filters, which puts a colour
+# error into every source in the frame.
+DAOFIND_FWHM = None              # None = measure it from the data (recommended)
+SEEING_FALLBACK = 4.0            # Used only if the measurement cannot be made
+SEEING_MIN, SEEING_MAX = 1.5, 15.0   # Sanity range for the measured value, pixels
+
+SIGMA_CLIP = 3.0                 # Sigma clipping level for background statistics
+DETECTION_THRESHOLD_SIGMA = 3.0  # Detection threshold in units of background sigma
+PEAK_MIN_STD = 3.0               # Minimum peak signal-to-noise ratio for a detection
+
+# Background for detection. One median for a whole frame cannot describe a
+# galaxy: across these frames the local sky runs from -2 to +62 counts, so a
+# single global threshold is far too high in the empty corners and far too low
+# in the disc. A coarse grid follows the diffuse light instead.
+BACKGROUND_BOX_SIZE = 48         # Grid cell for the local background, pixels
+BACKGROUND_FILTER_SIZE = 3       # Median filter applied across the grid
+
+# Filled in by process_fits() once the frames are read, and written into the
+# output so a run can be reproduced.
+SEEING_MEASURED = {}
 
 # Background subtraction
 BG_SUB_FUNC = np.nanmedian       # Function used to compute and subtract background level
 
-# Matching tolerance B and V Filters (pixels)
-MATCH_TOLERANCE = 15.0           # Pixel tolerance for matching detections between B and V images
+# Matching a detection in B to the same object in V. Like the catalogue
+# tolerance below, this is tied to the measured seeing rather than fixed. At a
+# flat 15 px - nearly four times the width of a star on these frames - noise in
+# one band pairs with unrelated noise in the other: such pairs carried three
+# times the colour scatter of real ones and made up a quarter of the catalogue.
+MATCH_SCALE = 1.5                # Tolerance as a multiple of the measured FWHM
+MATCH_TOLERANCE_MIN = 3.0        # ...but never tighter than this, in pixels
 
 # Reference star parameters
 REF_MAG_LIMIT = 20.0             # Catalog magnitude limit for selecting reference stars
 REF_CATALOG = "II/336/apass9"    # Reference star catalog to use (APASS9 with B,V magnitudes)
 
-# Matching tolerance between catalog stars and detected sources (pixels)
-CATALOG_MATCH_TOLERANCE = 20.0   # Pixel tolerance for matching catalog stars to detected sources
-
-# Matching tolerance between catalog stars and measured flux positions (pixels)
-CATALOG_FLUX_MATCH_TOLERANCE = 20.0  # Pixel tolerance for matching catalog stars to measured flux positions
+# Matching a catalogue star to what was actually measured. This used to be a
+# flat 20 pixels, which is 15 arcsec on these frames: wide enough that when a
+# star was missed, the nearest noise blob was accepted in its place without a
+# word. The tolerance now scales with the measured seeing, and two further
+# checks below reject a pairing that does not hold up.
+CATALOG_FLUX_MATCH_SCALE = 1.5   # Tolerance as a multiple of the measured FWHM
+CATALOG_FLUX_MATCH_MIN = 3.0     # ...but never tighter than this, in pixels
+REF_CROSS_BAND_TOLERANCE = 2.0   # B and V must land on the same object, within
+                                 # this multiple of the FWHM, or the star is
+                                 # dropped from the calibration
+REF_ZP_OUTLIER_SIGMA = 3.0       # Reject a reference star whose implied zero
+                                 # point is this far from the robust value
 
 # Calibration parameters
 CALIB_NUM_STARS = None           # Number of reference stars for calibration (user will be asked)
@@ -268,6 +312,59 @@ def compute_fwhm(data, x, y, size=FWHM_WINDOW_SIZE):
         return np.mean([fwhm_x, fwhm_y])
     return None
 
+def local_background(data):
+    """Background and noise on a coarse grid, so a galaxy's own light does not
+    set the detection threshold for the empty sky around it."""
+    return Background2D(data, (BACKGROUND_BOX_SIZE, BACKGROUND_BOX_SIZE),
+                        filter_size=(BACKGROUND_FILTER_SIZE, BACKGROUND_FILTER_SIZE),
+                        sigma_clip=SigmaClip(sigma=SIGMA_CLIP),
+                        bkg_estimator=MedianBackground())
+
+
+def star_width(data, x, y, half=12):
+    """Width at half maximum of one source, in pixels, measured on the data as
+    it is. compute_fwhm() smooths first, which suits aperture sizing but adds
+    about 3 pixels; a detection kernel needs the true width."""
+    x, y = int(round(x)), int(round(y))
+    if x - half < 0 or y - half < 0 or x + half >= data.shape[1] or y + half >= data.shape[0]:
+        return np.nan
+    cut = data[y - half:y + half, x - half:x + half]
+    peak = cut.max()
+    if not np.isfinite(peak) or peak <= 0:
+        return np.nan
+    idx = np.argwhere(cut > peak / 2)
+    if not len(idx):
+        return np.nan
+    return np.mean([np.ptp(idx[:, 1]) + 1, np.ptp(idx[:, 0]) + 1])
+
+
+def estimate_seeing(data, background, rms, band):
+    """Measure how wide a star actually is in this frame.
+
+    Detect once at a high threshold to get bright, unambiguous stars, measure
+    each one, and take the median. Nothing about the telescope is assumed and
+    no header keyword is required, so this works on any frame.
+    """
+    try:
+        found = DAOStarFinder(fwhm=SEEING_FALLBACK, threshold=20.0 * rms)(data - background)
+        if found is not None and len(found) >= 5:
+            brightest = found[np.argsort(found['flux'])][-200:]
+            widths = [star_width(data - background, s['xcentroid'], s['ycentroid'])
+                      for s in brightest]
+            widths = np.asarray(widths, dtype=float)
+            seeing = np.nanmedian(widths)
+            if np.isfinite(seeing) and SEEING_MIN <= seeing <= SEEING_MAX:
+                print(f"   {band}: stars are {seeing:.2f} px wide"
+                      f" (measured on {int(np.isfinite(widths).sum())} bright stars)", flush=True)
+                return float(seeing)
+        print(f"   {band}: could not measure the star width, using"
+              f" {SEEING_FALLBACK} px", flush=True)
+    except Exception as exc:
+        print(f"   {band}: star width measurement failed ({exc}), using"
+              f" {SEEING_FALLBACK} px", flush=True)
+    return float(SEEING_FALLBACK)
+
+
 def process_fits(filename, band):
     """Detect sources, perform aperture photometry and return results."""
     hdul = fits.open(filename)
@@ -275,11 +372,22 @@ def process_fits(filename, band):
     hdul.close()
 
     print(f"Finding sources in the {band} image...", flush=True)
-    mean, median, std = sigma_clipped_stats(data, sigma=SIGMA_CLIP)
-    threshold = DETECTION_THRESHOLD_SIGMA * std
-    daofind = DAOStarFinder(fwhm=DAOFIND_FWHM, threshold=threshold)
-    sources = daofind(data - median)
-    sources = sources[sources['peak'] > PEAK_MIN_STD * std]
+    bkg = local_background(data)
+    rms = float(np.median(bkg.background_rms))
+    print(f"   {band}: local sky runs from {bkg.background.min():.1f}"
+          f" to {bkg.background.max():.1f} counts, noise {rms:.2f}", flush=True)
+
+    fwhm_detect = DAOFIND_FWHM if DAOFIND_FWHM else estimate_seeing(
+        data, bkg.background, rms, band)
+    SEEING_MEASURED[band] = fwhm_detect
+
+    threshold = DETECTION_THRESHOLD_SIGMA * rms
+    daofind = DAOStarFinder(fwhm=fwhm_detect, threshold=threshold)
+    sources = daofind(data - bkg.background)
+    if sources is None or len(sources) == 0:
+        print(f"   {band}: no sources found", flush=True)
+        return []
+    sources = sources[sources['peak'] > PEAK_MIN_STD * rms]
 
     # Measuring every source takes the longest of any step here and used to run
     # in silence. Report about ten times, each on its own line: Spyder's console
@@ -335,7 +443,7 @@ def process_fits(filename, band):
     return results
 
 # ---------------- MATCHING FUNCTION ----------------
-def match_sources(df_B, df_V, tol=MATCH_TOLERANCE):
+def match_sources(df_B, df_V, tol):
     """Match B and V sources by nearest (X,Y) within tolerance."""
     matched_rows = []
     used_V = set()
@@ -359,9 +467,13 @@ def match_sources(df_B, df_V, tol=MATCH_TOLERANCE):
 def extract_reference_stars(fits_file, df_B, df_V,
                             mag_limit=15.0,
                             catalog="II/336/apass9",
-                            tol=2.0,
-                            flux_tol=3.0):
+                            fwhm_hint=4.0):
     """Query Vizier and return reference stars with catalog mags, measured fluxes and positions (B,V)."""
+    # How far from the catalogue position a detection may be and still be
+    # accepted as that star. Tied to the seeing, so it stays a fraction of a
+    # star's width rather than a flat number of pixels.
+    flux_tol = max(CATALOG_FLUX_MATCH_MIN, CATALOG_FLUX_MATCH_SCALE * fwhm_hint)
+    print(f"   matching catalogue stars to detections within {flux_tol:.1f} px", flush=True)
     hdr = fits.getheader(fits_file)
     wcs = WCS(hdr)
 
@@ -433,18 +545,68 @@ def extract_reference_stars(fits_file, df_B, df_V,
     df_ref["Y_V"] = YV_meas
 
     # filter only stars with valid flux in both bands
+    n_found = len(df_ref)
     df_ref = df_ref.dropna(subset=["Flux_B_measured","Flux_V_measured"])
+    n_bothbands = len(df_ref)
 
-    return df_ref
+    # How far each band's measurement ended up from where the catalogue says the
+    # star is, and from the other band. Kept in the file: when a calibration
+    # goes wrong these two columns say so at a glance.
+    df_ref["Offset_B"] = np.hypot(df_ref["X_B"] - df_ref["X_pix"],
+                                  df_ref["Y_B"] - df_ref["Y_pix"])
+    df_ref["Offset_V"] = np.hypot(df_ref["X_V"] - df_ref["X_pix"],
+                                  df_ref["Y_V"] - df_ref["Y_pix"])
+    df_ref["Separation_B_V"] = np.hypot(df_ref["X_B"] - df_ref["X_V"],
+                                        df_ref["Y_B"] - df_ref["Y_V"])
+
+    # A star is only usable if both bands measured the same object. When one
+    # band misses the star, the nearest blob is accepted instead and the two
+    # bands drift apart - which is exactly the pairing that ruins a zero point.
+    cross_tol = REF_CROSS_BAND_TOLERANCE * max(fwhm_hint, 1.0)
+    same_object = df_ref["Separation_B_V"] <= cross_tol
+    n_split = int((~same_object).sum())
+    df_ref = df_ref[same_object]
+
+    print(f"   reference stars: {n_found} in the catalogue,"
+          f" {n_bothbands} measured in both bands,"
+          f" {n_split} dropped for landing on different objects in B and V"
+          f" (more than {cross_tol:.1f} px apart),"
+          f" {len(df_ref)} usable", flush=True)
+
+    return df_ref.reset_index(drop=True)
 
 
 # ---------------- CALIBRATION FUNCTION ----------------
-def compute_zero_point(fluxes, mags):
-    """Compute zero point given fluxes and catalog magnitudes, ignoring NaNs."""
-    mask = (~np.isnan(fluxes)) & (~np.isnan(mags))
-    if np.sum(mask) == 0:
-        return np.nan
-    return np.mean(mags[mask] + 2.5 * np.log10(fluxes[mask]))
+def compute_zero_point(fluxes, mags, label=""):
+    """Zero point from reference stars, combined so that one bad star cannot
+    carry the frame.
+
+    This was a plain mean, and a mean is the wrong tool. A reference star whose
+    flux was measured on the wrong object pairs a real catalogue magnitude with
+    a meaningless flux; the pair can be several magnitudes out, and a single one
+    moves the mean enough to shift every magnitude in the output. Taking the
+    median first and then clipping about it makes the bad stars visible and
+    harmless: they are reported, not averaged in.
+    """
+    fluxes = np.asarray(fluxes, dtype=float)
+    mags = np.asarray(mags, dtype=float)
+    mask = np.isfinite(fluxes) & np.isfinite(mags) & (fluxes > 0)
+    if not mask.any():
+        return np.nan, 0, 0
+
+    zp = mags[mask] + 2.5 * np.log10(fluxes[mask])
+    keep = np.ones(len(zp), dtype=bool)
+    if len(zp) >= 4:
+        spread = np.median(np.abs(zp - np.median(zp))) * 1.4826  # robust sigma
+        if spread > 0:
+            keep = np.abs(zp - np.median(zp)) <= REF_ZP_OUTLIER_SIGMA * spread
+    value = float(np.median(zp[keep])) if keep.any() else float(np.median(zp))
+    n_used, n_cut = int(keep.sum()), int((~keep).sum())
+    if label:
+        print(f"   zero point {label} = {value:.3f}"
+              f"   from {n_used} stars, {n_cut} rejected as outliers"
+              f"   (scatter {np.std(zp[keep]):.3f} mag)", flush=True)
+    return value, n_used, n_cut
 
 
 # ----- Add color index (B-V) and create CMD for both full and cleaned catalogs -----
@@ -493,12 +655,84 @@ def make_cmd(df, base_file, label):
     else:
         print(f"Mag_B or Mag_V not found in {label} catalog. CMD not created.")
 
+# ---------------- LOOK THE GALAXY UP ----------------
+# Two of the three numbers this script needs about the galaxy are published,
+# and asking a student to type them from memory is how a run ends up assuming
+# M101 sits at 1 Mpc. They are fetched by name and offered as the default; you
+# can still type your own.
+
+R_V = 3.1                        # A_V / E(B-V) for dust in our own galaxy
+DISTANCE_CATALOG = "J/AJ/152/50"  # Cosmicflows-3, Tully et al. 2016
+
+
+def lookup_distance(name):
+    """Redshift-independent distance in Mpc from Cosmicflows-3, or None.
+
+    Redshift is no use for a galaxy this close - M101's recession velocity puts
+    it at about 3 Mpc, roughly half its real distance - so a catalogue of direct
+    measurements is what is wanted.
+    """
+    try:
+        coord = SkyCoord.from_name(name)
+        hit = Vizier(columns=["**"], row_limit=5).query_region(
+            coord, radius=2 * u.arcmin, catalog=DISTANCE_CATALOG)
+        if not hit:
+            return None
+        table = hit[0]
+        for col in ("Dist", "<Dist>"):
+            if col in table.colnames:
+                value = float(table[col][0])
+                if np.isfinite(value) and value > 0:
+                    print(f"[lookup] {name}: {value:.2f} Mpc"
+                          f" (Cosmicflows-3)", flush=True)
+                    return value
+    except Exception as exc:
+        print(f"[lookup] distance unavailable ({exc})", flush=True)
+    return None
+
+
+def lookup_extinction(name):
+    """Galactic reddening E(B-V) towards the galaxy, or None.
+
+    Schlafly & Finkbeiner (2011) recalibration of the Schlegel dust maps, served
+    by IRSA. A_V follows as R_V x E(B-V); the two are not free to be set apart
+    from each other, which is why only one of them is asked for.
+    """
+    try:
+        from astroquery.ipac.irsa.irsa_dust import IrsaDust
+        table = IrsaDust.get_query_table(name, section="ebv")
+        value = float(table["ext SandF mean"][0])
+        if np.isfinite(value) and value >= 0:
+            print(f"[lookup] {name}: E(B-V) = {value:.4f},"
+                  f" so A_V = {R_V * value:.3f} (Schlafly & Finkbeiner 2011)",
+                  flush=True)
+            return value
+    except Exception as exc:
+        print(f"[lookup] extinction unavailable ({exc})", flush=True)
+    return None
+
+
 # ---------------- RUN ANALYSIS ----------------
 print("=== Photometry Input ===")
 obj_name = _ask("Galaxy name", "M101", str)
-distance    = _ask("Distance (Mpc)", 1, float)
-A_V         = _ask("Galactic extinction A_V (mag)", 0.1, float)
-E_BV        = _ask("Galactic color excess E(B-V)", 0.05, float)
+
+print("Looking the galaxy up...", flush=True)
+_dist_default = lookup_distance(obj_name)
+_ebv_default = lookup_extinction(obj_name)
+if _dist_default is None:
+    print("[lookup] no published distance found - please supply one", flush=True)
+if _ebv_default is None:
+    print("[lookup] no reddening found - please supply one", flush=True)
+
+distance = _ask("Distance (Mpc)", _dist_default if _dist_default else 10.0, float)
+E_BV     = _ask("Galactic color excess E(B-V)",
+                _ebv_default if _ebv_default is not None else 0.0, float)
+# A_V is not asked for separately: it is R_V x E(B-V) by definition, and asking
+# for both invites a pair that cannot both be true. The defaults this script
+# used to offer, A_V 0.1 with E(B-V) 0.05, imply R_V = 2.0.
+A_V = R_V * E_BV
+print(f"Using distance {distance:.2f} Mpc,"
+      f" E(B-V) = {E_BV:.4f}, A_V = {A_V:.3f}", flush=True)
 fits_file_B = _norm_path(_ask("Path to B-band FITS", r"D:\example_B.fts", str))
 fits_file_V = _norm_path(_ask("Path to V-band FITS", r"D:\example_V.fts", str))
 
@@ -524,7 +758,13 @@ df_V = pd.DataFrame(results_V, columns=[
     "Band", "Annulus Inner Radius", "Annulus Outer Radius"
 ])
 
-df_matched = match_sources(df_B, df_V, tol=MATCH_TOLERANCE)
+_fwhm_hint = max(SEEING_MEASURED.get("B", SEEING_FALLBACK),
+                 SEEING_MEASURED.get("V", SEEING_FALLBACK))
+_match_tol = max(MATCH_TOLERANCE_MIN, MATCH_SCALE * _fwhm_hint)
+print(f"Matching B to V within {_match_tol:.1f} px"
+      f" (stars are {_fwhm_hint:.1f} px wide)", flush=True)
+df_matched = match_sources(df_B, df_V, tol=_match_tol)
+print(f"   {len(df_matched):,} sources measured in both bands", flush=True)
 
 csv_filename = os.path.join(_outdir, f"{obj_name}_photometry_results.csv")
 df_matched.to_csv(csv_filename, index=False)
@@ -534,8 +774,7 @@ print(f"Data saved to {csv_filename}")
 df_ref = extract_reference_stars(fits_file_V, df_B, df_V,
                                  mag_limit=REF_MAG_LIMIT,
                                  catalog=REF_CATALOG,
-                                 tol=CATALOG_MATCH_TOLERANCE,
-                                 flux_tol=CATALOG_FLUX_MATCH_TOLERANCE)
+                                 fwhm_hint=_fwhm_hint)
 if not df_ref.empty:
     csv_ref = os.path.join(_outdir, f"{obj_name}_reference_stars.csv")
     df_ref.to_csv(csv_ref, index=False)
@@ -543,21 +782,39 @@ if not df_ref.empty:
 
     # ----- Calibration using N reference stars -----
     print(f"{len(df_ref)} reference stars available.")
-    N = int(input("Enter number of reference stars to use for calibration: "))
+    N = _ask("How many to calibrate against", len(df_ref), int)
+    N = max(1, min(int(N), len(df_ref)))
     df_calib = df_ref.head(N)
 
     # compute zero points
-    zp_B = compute_zero_point(df_calib["Flux_B_measured"].values, df_calib["Bmag"].values)
-    zp_V = compute_zero_point(df_calib["Flux_V_measured"].values, df_calib["Vmag"].values)
+    zp_B, n_zp_B, n_cut_B = compute_zero_point(
+        df_calib["Flux_B_measured"].values, df_calib["Bmag"].values, label="B")
+    zp_V, n_zp_V, n_cut_V = compute_zero_point(
+        df_calib["Flux_V_measured"].values, df_calib["Vmag"].values, label="V")
 
     # add aperture radii
     df_matched["Aperture_Radius_B"] = df_matched["FWHM_B"] * APERTURE_SCALE
     df_matched["Aperture_Radius_V"] = df_matched["FWHM_V"] * APERTURE_SCALE
 
-    # compute calibrated magnitudes
-    df_matched["Mag_B"] = zp_B - 2.5 * np.log10(df_matched["Flux_B"])
-    df_matched["Mag_V"] = zp_V - 2.5 * np.log10(df_matched["Flux_V"])
-    
+    # Calibrated magnitudes, then the foreground dust of our own galaxy taken
+    # out. A_V dims the V band; B is dimmed by A_V + E(B-V), which is what the
+    # colour excess means. Subtracting both leaves the colour reddened by
+    # exactly E(B-V), so that is what comes off B-V.
+    df_matched["Mag_B"] = zp_B - 2.5 * np.log10(df_matched["Flux_B"]) - (A_V + E_BV)
+    df_matched["Mag_V"] = zp_V - 2.5 * np.log10(df_matched["Flux_V"]) - A_V
+
+    # What this run assumed, carried in the data itself. Without these columns
+    # there is no way to tell afterwards which distance or extinction produced
+    # a given set of numbers.
+    df_matched["ZP_B_used"] = zp_B
+    df_matched["ZP_V_used"] = zp_V
+    df_matched["N_ref_used"] = n_zp_B + n_zp_V
+    df_matched["A_V_used"] = A_V
+    df_matched["E_BV_used"] = E_BV
+    df_matched["Distance_Mpc_used"] = distance
+    df_matched["FWHM_measured_B"] = SEEING_MEASURED.get("B", np.nan)
+    df_matched["FWHM_measured_V"] = SEEING_MEASURED.get("V", np.nan)
+
     # save calibrated photometry
     csv_calib = os.path.join(_outdir, f"{obj_name}_calibrated_photometry.csv")
     df_matched.to_csv(csv_calib, index=False)
@@ -582,6 +839,25 @@ out_png = os.path.join(_outdir, f"{obj_name}_V_sources.png")
 plt.savefig(out_png, dpi=150)
 plt.close()
 print(f"V-band source map saved to {out_png}")
+
+# The same for B. There used to be no B map, and without one there is no way to
+# see by eye that the two filters found the same things - which is precisely the
+# failure that put a colour error into every source here.
+data_B_disp = fits.getdata(fits_file_B)
+plt.figure(figsize=(10, 10))
+plt.imshow(data_B_disp, cmap="gray", origin="lower",
+           vmin=np.percentile(data_B_disp, 5), vmax=np.percentile(data_B_disp, 99))
+plt.colorbar(label="Counts")
+plt.scatter(df_B["X"], df_B["Y"], s=40, edgecolor="red", facecolor="none",
+            label="Measured sources")
+plt.title(f"{obj_name} - B band with detected sources")
+plt.xlabel("X [pixels]")
+plt.ylabel("Y [pixels]")
+plt.legend()
+out_png_B = os.path.join(_outdir, f"{obj_name}_B_sources.png")
+plt.savefig(out_png_B, dpi=150)
+plt.close()
+print(f"B-band source map saved to {out_png_B}")
 
 # This block loads the calibrated photometry results and the reference stars list
 # It compares the X,Y positions of all measured sources with the reference stars
