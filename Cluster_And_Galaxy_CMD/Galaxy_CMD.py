@@ -20,6 +20,25 @@ from the older population, and the radial profile then shows how they are
 distributed with distance from the centre - which is what a spiral arm
 looks like in numbers.
 
+WHERE THE METHOD COMES FROM
+
+Identifying star-forming regions by their colour in ordinary broad-band
+images, and then treating their distribution as a measurable property of the
+galaxy, follows
+
+    Brosch, N. (1992). Star formation systematics from colour images.
+    Astrophysics and Space Science, 188, 289-298.
+    doi:10.1007/BF00644916
+
+The appeal for teaching is that it asks nothing exotic. Two broad-band frames
+of a galaxy, B and V, are within reach of a school-accessible telescope, and
+the young regions separate out on colour alone - no spectroscopy, no narrow-
+band filter. A student with one night of data can ask a real question about
+where a galaxy is forming stars, and answer it with a number.
+
+This script is the pipeline for that, and has been used across many student
+projects.
+
 WHAT YOU NEED
 
   two FITS images of the same galaxy, one in B and one in V, plate-solved

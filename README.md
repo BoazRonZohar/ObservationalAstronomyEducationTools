@@ -138,10 +138,22 @@ never into the folder your frames live in.
 
 | Tool | |
 |---|---|
-| `Cluster_CMD.py` | Photometry and colour-magnitude diagrams for open and globular clusters: calibration, extinction correction, membership selection. |
-| `Galaxy_CMD.py` | The same for galaxies: background subtraction, calibration, star removal. |
+| `Cluster_CMD.py` | Photometry and colour-magnitude diagrams for open and globular clusters: calibration, extinction correction, membership selection. Cluster membership comes from Gaia astrometry, not from whatever happens to lie in the same direction. |
+| `Galaxy_CMD.py` | The same for galaxies, and the radial density profile of the blue knots — the young star-forming regions in the arms. |
 | `Open_Cluster_Name_Resolver.py` | Turns `M6` into `NGC_6405` — the name the catalogue actually uses. Run it before `Cluster_CMD.py`. |
 | `List_Catalogue_Clusters.py` | Prints every cluster name in the catalogue, for when a name is being rejected. |
+
+Finding star-forming regions by their colour in ordinary broad-band images,
+and treating their distribution as a measurable property of the galaxy,
+follows Brosch, N. (1992), *Star formation systematics from colour images*,
+Astrophysics and Space Science 188, 289–298
+([doi:10.1007/BF00644916](https://doi.org/10.1007/BF00644916)).
+
+What makes it suit a classroom is that it asks for nothing exotic: two
+broad-band frames, B and V, are within reach of a school-accessible
+telescope, and the young regions separate out on colour alone — no
+spectroscopy, no narrow-band filter. A student with one night of data can ask
+where a galaxy is forming stars, and answer it with a number.
 
 ---
 
