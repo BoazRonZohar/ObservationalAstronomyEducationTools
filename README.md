@@ -1,5 +1,9 @@
 # Observational Astronomy Education Tools
 
+[![Licence: CC BY-NC-SA 4.0](https://img.shields.io/badge/License-CC%20BY--NC--SA%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc-sa/4.0/)
+[![For education](https://img.shields.io/badge/for-teaching%20and%20research-blue.svg)](#licence)
+[![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/)
+
 Tools for teaching astronomy with real telescope data: planning what to observe,
 processing the frames that come back, measuring stars in them, and turning those
 measurements into light curves.
@@ -186,8 +190,18 @@ Where something could not be measured, it is left out or flagged, not guessed.
 
 ## Licence
 
-[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) — use it, change it,
-teach with it. Please keep the attribution.
+[CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/) —
+Attribution, NonCommercial, ShareAlike.
+
+Use these tools, change them and teach with them freely. Three conditions:
+
+- **Attribution** — credit the author and link to the licence.
+- **NonCommercial** — not for commercial use. These are made for teaching.
+- **ShareAlike** — if you share a changed version, share it under this same
+  licence, so it stays available to the next teacher.
+
+The licence covers the tools. The catalogues and services they draw on belong
+to others and carry their own terms; see `LICENSE` for the list.
 
 Created by **Dr. Boaz Ron Zohar**
 Kinneret Observatory · Member of the LCO Global Sky Partners programme

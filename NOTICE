@@ -1,0 +1,41 @@
+Observational Astronomy Education Tools
+Copyright (c) 2026 Dr. Boaz Ron Zohar
+Kinneret Observatory
+Member of the LCO Global Sky Partners programme
+
+https://github.com/BoazRonZohar/ObservationalAstronomyEducationTools
+
+
+Licence
+-------
+
+Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+(CC BY-NC-SA 4.0). The full text is in LICENSE.
+
+In short: use these tools, change them and teach with them freely. Give
+credit. Do not use them commercially. If you share a changed version, share it
+under this same licence, so it stays available to the next teacher.
+
+  https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+
+Third-party data
+----------------
+
+The catalogues embedded in the observation planning tools, and the services
+the scripts query, are the work of others. The licence above covers these
+tools; it does not extend to those datasets, which carry their own terms and
+citation requirements:
+
+  Gaia DR3                     ESA / DPAC
+  GCVS 5.1                     Sternberg Astronomical Institute, Moscow
+  AAVSO VSX                    AAVSO
+  VarAstro                     var.astro.cz
+  TEPCat                       J. Southworth, Keele University
+  NASA Exoplanet Archive       NASA / IPAC
+  SkyBoT                       IMCCE / Observatoire de Paris
+  Minor Planet Center          IAU / Smithsonian Astrophysical Observatory
+  Cantat-Gaudin open clusters  Vizier J/A+A/640/A1
+
+If you publish results obtained with these tools, cite the underlying data
+sources as those projects ask.
