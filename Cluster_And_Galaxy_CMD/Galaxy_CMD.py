@@ -230,7 +230,9 @@ def compute_fwhm(data, x, y, size=FWHM_WINDOW_SIZE):
     x_min, x_max = int(x-size), int(x+size)
     y_min, y_max = int(y-size), int(y+size)
     if x_min < 0 or y_min < 0 or x_max >= data.shape[1] or y_max >= data.shape[0]:
-        print(f"Skipping source at ({x}, {y}) due to out-of-bounds sub-image.")
+        # A source too close to the edge for a full measuring box. There are
+        # hundreds of these on a typical frame; printing one line each buried
+        # everything else, so they are counted and reported once at the end.
         return None
 
     sub_image = data[y_min:y_max, x_min:x_max]
@@ -253,39 +255,64 @@ def process_fits(filename, band):
     data = hdul[0].data
     hdul.close()
 
+    print(f"Finding sources in the {band} image...", flush=True)
     mean, median, std = sigma_clipped_stats(data, sigma=SIGMA_CLIP)
     threshold = DETECTION_THRESHOLD_SIGMA * std
     daofind = DAOStarFinder(fwhm=DAOFIND_FWHM, threshold=threshold)
     sources = daofind(data - median)
     sources = sources[sources['peak'] > PEAK_MIN_STD * std]
 
+    # Measuring every source takes the longest of any step here and used to run
+    # in silence. Report about ten times, each on its own line: Spyder's console
+    # does not reliably honour a carriage return, and a rewritten line then
+    # becomes one very long one.
+    n_total = len(sources)
+    step = max(1, n_total // 10)
+    print(f"Measuring {n_total:,} sources in the {band} image...", flush=True)
+
+    n_edge = n_nosignal = n_negative = 0
     results = []
-    for source in sources:
+    for i, source in enumerate(sources, 1):
+        if i % step == 0 or i == n_total:
+            print(f"   {i:,} of {n_total:,}", flush=True)
         x, y = source['xcentroid'], source['ycentroid']
         fwhm = compute_fwhm(data, x, y)
-        # A width of zero is not a measurement, it is a detection that turned
-        # out to be nothing. It happens on a background-subtracted image where
-        # the local peak is a noise ripple: half of a peak of 0.006 is a
-        # meaningless threshold, only one pixel clears it, and the width
-        # between that pixel and itself is zero. Passing that on gives
-        # photutils a radius of zero and the run stops. Skip it instead - the
-        # source carries no signal worth measuring either way.
-        if fwhm is not None and np.isfinite(fwhm) and fwhm > 0:
-            radius = APERTURE_SCALE * fwhm
-            aperture = CircularAperture((x, y), r=radius)
-            annulus_inner_radius = radius * ANNULUS_INNER_SCALE
-            annulus_outer_radius = radius * ANNULUS_OUTER_SCALE
-            annulus = CircularAnnulus((x, y), r_in=annulus_inner_radius, r_out=annulus_outer_radius)
+        # fwhm is None       - too close to the edge for a full measuring box
+        # fwhm is zero/NaN   - a detection that turned out to be nothing. On a
+        #                      background-subtracted image the local peak of a
+        #                      noise ripple can be 0.006 counts; half of that is
+        #                      a meaningless threshold, one pixel clears it, and
+        #                      the width between that pixel and itself is zero.
+        #                      Passing it on gives photutils a radius of zero
+        #                      and the run stops.
+        if fwhm is None:
+            n_edge += 1
+            continue
+        if not (np.isfinite(fwhm) and fwhm > 0):
+            n_nosignal += 1
+            continue
 
-            phot_table = aperture_photometry(data, [aperture, annulus])
-            background_mean = phot_table['aperture_sum_1'][0] / annulus.area
-            background_subtracted_flux = phot_table['aperture_sum_0'][0] - background_mean * aperture.area
+        radius = APERTURE_SCALE * fwhm
+        aperture = CircularAperture((x, y), r=radius)
+        annulus_inner_radius = radius * ANNULUS_INNER_SCALE
+        annulus_outer_radius = radius * ANNULUS_OUTER_SCALE
+        annulus = CircularAnnulus((x, y), r_in=annulus_inner_radius, r_out=annulus_outer_radius)
 
-            if background_subtracted_flux < 0:
-                continue
+        phot_table = aperture_photometry(data, [aperture, annulus])
+        background_mean = phot_table['aperture_sum_1'][0] / annulus.area
+        background_subtracted_flux = phot_table['aperture_sum_0'][0] - background_mean * aperture.area
 
-            results.append([x, y, fwhm, radius, background_subtracted_flux,
-                            band, annulus_inner_radius, annulus_outer_radius])
+        if background_subtracted_flux < 0:
+            n_negative += 1
+            continue
+
+        results.append([x, y, fwhm, radius, background_subtracted_flux,
+                        band, annulus_inner_radius, annulus_outer_radius])
+
+    print(f"   {len(results):,} measured"
+          f"   |   skipped: {n_edge:,} at the frame edge,"
+          f" {n_nosignal:,} with no measurable width,"
+          f" {n_negative:,} with negative flux", flush=True)
     return results
 
 # ---------------- MATCHING FUNCTION ----------------
