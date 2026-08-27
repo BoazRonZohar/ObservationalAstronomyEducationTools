@@ -47,16 +47,18 @@ HOW IT WORKS
 
 WHAT YOU GET
 
-Around twenty files, all named after the galaxy, written next to the input
-images. That is a lot, so here is what each one is and which you actually
+Around twenty files, all named after the galaxy. They go into a sub-folder
+called result_CMD, created next to your images - the folder holding your data
+comes out of a run exactly as it went in, with the frames only read.
+
+That is a lot of files, so here is what each one is and which you actually
 want to look at. Below, NAME stands for the galaxy name you typed.
 
-  Beside the input images, as a by-product:
+  A by-product, kept because it is what everything is measured on:
 
     <input>_bgsub.fits            each input image with its background
-                                  subtracted. This is what everything is
-                                  measured on. Keep it if you want to check
-                                  a source by eye.
+                                  subtracted. Useful if you want to check a
+                                  source by eye.
 
   Stage 1 - everything that was measured
 
@@ -211,7 +213,12 @@ def subtract_background_and_save(path):
     data, hdr = fits.getdata(path, header=True)
     bg_val = BG_SUB_FUNC(data)
     data_sub = data - bg_val
-    out_path = os.path.splitext(path)[0] + "_bgsub.fits"
+    # into result_CMD, not next to the frames: the folder holding your data
+    # should come out of a run exactly as it went in.
+    out_dir = os.path.join(os.path.dirname(path) or os.getcwd(), "result_CMD")
+    os.makedirs(out_dir, exist_ok=True)
+    stem = os.path.splitext(os.path.basename(path))[0]
+    out_path = os.path.join(out_dir, stem + "_bgsub.fits")
     fits.writeto(out_path, data_sub, hdr, overwrite=True)
     print(f"[bgsub] wrote {out_path} (bg={bg_val:.3f})")
     return out_path
@@ -449,7 +456,13 @@ E_BV        = _ask("Galactic color excess E(B-V)", 0.05, float)
 fits_file_B = _norm_path(_ask("Path to B-band FITS", r"D:\example_B.fts", str))
 fits_file_V = _norm_path(_ask("Path to V-band FITS", r"D:\example_V.fts", str))
 
-_outdir = os.path.dirname(fits_file_B) if os.path.dirname(fits_file_B) else os.getcwd()
+# Everything this script writes goes into one sub-folder beside the images,
+# rather than being scattered through the folder holding your data. The frames
+# stay where they are and are only read.
+_datadir = os.path.dirname(fits_file_B) if os.path.dirname(fits_file_B) else os.getcwd()
+_outdir = os.path.join(_datadir, "result_CMD")
+os.makedirs(_outdir, exist_ok=True)
+print(f"[out] writing everything to {_outdir}")
 fits_file_B = subtract_background_and_save(fits_file_B)
 fits_file_V = subtract_background_and_save(fits_file_V)
 

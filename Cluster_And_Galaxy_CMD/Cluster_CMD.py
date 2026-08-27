@@ -59,14 +59,16 @@ HOW IT WORKS
 
 WHAT YOU GET
 
-Written into the folder holding the B-band image. Note that these names are
-FIXED - they do not carry the cluster's name - so running a second cluster
-into the same folder overwrites the first. Give each cluster its own folder.
+Written into a sub-folder called result_CMD, created next to your images. The
+folder holding your data comes out of a run exactly as it went in.
 
-  Beside the input images
+Note that these names are FIXED - they do not carry the cluster's name - so a
+second cluster run against the same images overwrites the first. Give each
+cluster its own folder.
+
+  A by-product, kept because it is what everything is measured on:
 
     <input>_bgsub.fits              each image with its background subtracted.
-                                    This is what is measured.
 
   Every source in the frame
 
@@ -205,7 +207,12 @@ def subtract_background_and_save(path):
     data, hdr = fits.getdata(path, header=True)
     median_val = np.nanmedian(data)
     data_sub = data - median_val
-    out_path = os.path.splitext(path)[0] + "_bgsub.fits"
+    # into result_CMD, not next to the frames: the folder holding your data
+    # should come out of a run exactly as it went in.
+    out_dir = os.path.join(os.path.dirname(path) or os.getcwd(), "result_CMD")
+    os.makedirs(out_dir, exist_ok=True)
+    stem = os.path.splitext(os.path.basename(path))[0]
+    out_path = os.path.join(out_dir, stem + "_bgsub.fits")
     fits.writeto(out_path, data_sub, hdr, overwrite=True)
     print(f"[bgsub] wrote {out_path} (median={median_val:.3f})")
     return out_path
@@ -527,10 +534,20 @@ fits_file_G      = _ask("Path to G-band FITS image", r"D:\example_G.fts", str)
 fits_file_B = _norm_path(fits_file_B)
 fits_file_G = _norm_path(fits_file_G)
 
+# Everything this script writes goes into one sub-folder beside the images,
+# rather than being scattered through the folder holding your data. The frames
+# stay where they are and are only read.
+#
+# Worked out BEFORE the background step, because that step now returns a path
+# inside result_CMD; deriving the output folder from it afterwards would nest
+# result_CMD inside itself.
+_datadir = os.path.dirname(fits_file_G) if os.path.dirname(fits_file_G) else os.getcwd()
+_outdir = os.path.join(_datadir, "result_CMD")
+os.makedirs(_outdir, exist_ok=True)
+print(f"[out] writing everything to {_outdir}")
+
 fits_file_B = subtract_background_and_save(fits_file_B)
 fits_file_G = subtract_background_and_save(fits_file_G)
-
-_outdir = os.path.dirname(fits_file_G) if os.path.dirname(fits_file_G) else os.getcwd()
 out_csv = os.path.join(_outdir, "fluxes_XY_FWHM_Ap.csv")
 dfG = run_photometry(fits_file_G, "G")
 dfB = run_photometry(fits_file_B, "B")
