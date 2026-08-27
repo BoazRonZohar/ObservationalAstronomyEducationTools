@@ -6,14 +6,61 @@ Affiliation: Kinneret Observatory
 Member of the LCO Global Sky Partners programme
 Date: September 2025
 
-This code was developed as part of students projects on
-spiral galaxies.
+Written for student projects on spiral galaxies.
 
-Galaxy_Photometry_4_fixed.py
+WHAT IT DOES
 
-Photometry pipeline with background subtraction, B/V matching,
-reference star extraction from Vizier with tolerance filtering,
-and magnitude calibration using N reference stars
+Takes one B-band and one V-band image of a galaxy and produces its
+colour-magnitude diagram, together with the radial density profile of the
+blue knots - the young star-forming regions in the arms.
+
+The colour of a source says how hot and how young it is. Plotting colour
+against brightness for every source in the galaxy separates the blue knots
+from the older population, and the radial profile then shows how they are
+distributed with distance from the centre - which is what a spiral arm
+looks like in numbers.
+
+WHAT YOU NEED
+
+  two FITS images of the same galaxy, one in B and one in V, plate-solved
+  (the reference stars are pulled from a catalogue by sky position)
+
+WHAT IT ASKS YOU
+
+  galaxy name                    used to name the output files
+  distance in Mpc                converts pixels to parsecs in the profile
+  galactic extinction A_V        corrects the brightness
+  colour excess E(B-V)           corrects the colour
+  the two FITS paths
+  how many reference stars to calibrate against
+
+HOW IT WORKS
+
+  1. subtracts the background from each image and finds sources in both
+  2. measures each source with an aperture sized from its own FWHM
+  3. matches the B and V detections to each other by position
+  4. pulls reference stars from APASS9 through Vizier, matches them to the
+     detections, and calibrates the instrumental magnitudes against them
+  5. removes the foreground stars, leaving the galaxy's own sources
+  6. plots the colour-magnitude diagram, and the radial density profile of
+     what is left, in pixels and again in parsecs
+
+WHAT YOU GET, named after the galaxy
+
+  ..._photometry_results.csv                 every matched source
+  ..._reference_stars.csv                    the calibration stars used
+  ..._calibrated_photometry.csv              calibrated magnitudes
+  ..._calibrated_photometry_no_stars...csv   with foreground stars removed
+  ..._CMD.png                                the colour-magnitude diagram
+  ..._V_sources.png                          what was detected, on the image
+  ..._radial_density_profile*.csv / .png     the blue-knot profile
+
+The parameters at the top of this file are tuned for the Kinneret frames
+these projects use. On very different data - a much smaller telescope, a
+much fainter galaxy - the detection threshold and the matching tolerances
+are the first things to look at.
+
+Usage: run it. Every question has a default; press Enter to accept it.
 """
 
 import os

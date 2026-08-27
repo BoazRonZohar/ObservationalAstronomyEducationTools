@@ -6,17 +6,68 @@ Affiliation: Kinneret Observatory
 Member of the LCO Global Sky Partners programme
 Date: September 2025
 
-This code was developed as part of students projects on star clusters
+Written for student projects on star clusters.
 
-Created on Tue Sep  9 14:17:31 2025
+WHAT IT DOES
 
-@author: DR. Boaz Ron Zohar
+Takes one B-band and one G-band image of a star cluster and produces its
+colour-magnitude diagram.
 
-Cluster photometry pipeline (final version):
-- Keeps interactive user input
-- Uses per-star FWHM (from base file)
-- Each star gets its own aperture radius = 1.2 * FWHM
-- Outputs only X, Y, FWHM, Aperture_Radius, Flux_B, Flux_G
+A cluster is the closest astronomy comes to a controlled experiment: the
+stars formed together, sit at the same distance, and are seen through the
+same dust. So their differences are real differences between stars. Plot
+colour against brightness and they fall along a main sequence that bends at
+a point set by the cluster's age - which is how a cluster is dated.
+
+WHAT YOU NEED
+
+  two FITS images of the same cluster, one in B and one in G, plate-solved
+
+TWO KINDS OF CLUSTER, and the difference matters
+
+  Open (O)       Membership comes from Cantat-Gaudin & Anders 2020
+                 (Vizier J/A+A/640/A1), which used Gaia proper motions and
+                 parallaxes to decide which stars actually belong. Field
+                 stars that merely lie in the same direction are excluded.
+                 Give the catalogue's name for the cluster - M6 is NGC_6405
+                 there. Open_Cluster_Name_Resolver.py translates for you.
+
+  Globular (G)   No such membership catalogue exists for these, so members
+                 are taken geometrically: everything inside a radius you
+                 give, in pixels. You will be asked for that radius.
+
+WHAT IT ASKS YOU
+
+  cluster type, O or G
+  cluster name
+  cluster radius in pixels        globular clusters only
+  distance in parsecs             turns apparent magnitude into absolute
+  galactic extinction A_V         corrects the brightness
+  colour excess E(B-V)            corrects the colour
+  the two FITS paths
+
+HOW IT WORKS
+
+  1. finds sources in both images and measures the FWHM of each one
+  2. gives every star its own aperture, 1.2 x its own FWHM, rather than one
+     radius for the whole frame - a bright star and a faint one do not have
+     the same profile
+  3. matches the B and G detections to each other
+  4. calibrates against APASS9 reference stars pulled from Vizier
+  5. selects the members, by catalogue or by radius
+  6. corrects for extinction and distance, and plots the diagram
+
+WHAT YOU GET
+
+  CSVs at each stage - raw photometry, the calibration stars, calibrated
+  magnitudes, the members, and the extinction-corrected values - plus the
+  colour-magnitude diagram and an image showing what was detected.
+
+The parameters at the top of this file are tuned for the Kinneret frames
+these projects use. On very different data, the detection threshold and the
+matching tolerances are the first things to look at.
+
+Usage: run it. Every question has a default; press Enter to accept it.
 """
 
 import os
