@@ -45,15 +45,83 @@ HOW IT WORKS
   6. plots the colour-magnitude diagram, and the radial density profile of
      what is left, in pixels and again in parsecs
 
-WHAT YOU GET, named after the galaxy
+WHAT YOU GET
 
-  ..._photometry_results.csv                 every matched source
-  ..._reference_stars.csv                    the calibration stars used
-  ..._calibrated_photometry.csv              calibrated magnitudes
-  ..._calibrated_photometry_no_stars...csv   with foreground stars removed
-  ..._CMD.png                                the colour-magnitude diagram
-  ..._V_sources.png                          what was detected, on the image
-  ..._radial_density_profile*.csv / .png     the blue-knot profile
+Around twenty files, all named after the galaxy, written next to the input
+images. That is a lot, so here is what each one is and which you actually
+want to look at. Below, NAME stands for the galaxy name you typed.
+
+  Beside the input images, as a by-product:
+
+    <input>_bgsub.fits            each input image with its background
+                                  subtracted. This is what everything is
+                                  measured on. Keep it if you want to check
+                                  a source by eye.
+
+  Stage 1 - everything that was measured
+
+    NAME_photometry_results.csv   every source detected in BOTH images and
+                                  matched between them: position, FWHM,
+                                  aperture radius, flux in B and in V.
+                                  Instrumental values, not yet calibrated.
+    NAME_reference_stars.csv      the APASS9 stars found in the field, with
+                                  their catalogue B and V. These set the zero
+                                  point. If the calibration looks wrong, look
+                                  here first - are there enough of them, and
+                                  are they spread across the frame?
+
+  Stage 2 - calibrated, still with foreground stars in it
+
+    NAME_calibrated_photometry.csv            real magnitudes
+    NAME_calibrated_photometry_with_color.csv the same, with B-V added
+    NAME_calibrated_photometry_CMD.png        colour-magnitude diagram
+    NAME_V_sources.png                        the V image with every measured
+                                              source circled
+
+  Stage 3 - foreground stars removed
+
+    Stars of our own galaxy lie in front of the target and are not part of
+    it. They are matched against the catalogue and taken out.
+
+    NAME_calibrated_photometry_no_stars.csv
+    NAME_calibrated_photometry_no_stars_with_color.csv
+    NAME_calibrated_photometry_no_stars_CMD.png
+    NAME_V_sources_no_stars.png
+
+  Stage 4 - blue knots only
+
+    What is left is cut on colour, keeping the blue sources: the young
+    star-forming regions in the arms. THIS IS THE RESULT the projects are
+    usually after.
+
+    NAME_calibrated_photometry_no_stars_color_filtered.csv
+    NAME_calibrated_photometry_no_stars_color_filtered_with_color.csv
+    NAME_calibrated_photometry_no_stars_color_filtered_CMD.png
+    NAME_V_sources_color_filtered.png
+    NAME_calibrated_photometry_no_stars_color_filtered_with_radius.csv
+                                    the same, plus each knot's distance
+                                    from the centre of the galaxy
+
+  Stage 5 - how the knots are distributed
+
+    NAME_radial_density_profile.csv       knots per square pixel, by radius
+    NAME_radial_density_profile_pc.csv    the same in parsecs, using the
+                                          distance you gave
+    NAME_radial_density_profile_step.csv     the same as a step function
+    NAME_radial_density_profile_step_pc.csv  the step function in parsecs
+    NAME_radial_density_profile_step.png       the plot, in pixels
+    NAME_radial_density_profile_step_pc.png    the plot, in parsecs
+
+  If you look at four files, look at these:
+
+    NAME_reference_stars.csv                   did the calibration have
+                                               anything to work with
+    NAME_V_sources_color_filtered.png          did it find the arms
+    NAME_..._color_filtered_CMD.png            the diagram
+    NAME_radial_density_profile_step_pc.png    the arms, in numbers
+
+  A _with_color file is its parent file with the B-V column added. If you
+  only want one, take the _with_color one.
 
 The parameters at the top of this file are tuned for the Kinneret frames
 these projects use. On very different data - a much smaller telescope, a
@@ -328,7 +396,7 @@ def compute_zero_point(fluxes, mags):
 
 # ----- Add color index (B-V) and create CMD for both full and cleaned catalogs -----
 
-def make_cmd(df, base_file, label, suffix):
+def make_cmd(df, base_file, label):
     if "Mag_B" in df.columns and "Mag_V" in df.columns:
         # Compute color index
         df = df.copy()
@@ -344,7 +412,11 @@ def make_cmd(df, base_file, label, suffix):
             df = df[cols]
 
         # Save new file with color index
-        out_file_color = base_file.replace(".csv", f"_with_color{suffix}.csv")
+        # base_file already carries whichever stage this is - "_no_stars",
+        # "_no_stars_color_filtered" - so the stage is not appended again.
+        # It used to be, which produced names like
+        # ..._no_stars_color_filtered_with_color_no_stars_color_filtered.csv
+        out_file_color = base_file.replace(".csv", "_with_color.csv")
         df.to_csv(out_file_color, index=False)
         print(f"File with color index saved to {out_file_color}")
 
@@ -361,7 +433,7 @@ def make_cmd(df, base_file, label, suffix):
         # >>> Control of x-axis (color index) range <<<
         plt.xlim(CMD_COLOR_MIN, CMD_COLOR_MAX)
 
-        out_cmd = base_file.replace(".csv", f"_CMD{suffix}.png")
+        out_cmd = base_file.replace(".csv", "_CMD.png")
         plt.savefig(out_cmd, dpi=150)
         plt.close()
         print(f"CMD diagram saved to {out_cmd}")
@@ -519,10 +591,10 @@ plt.close()
 print(f"V-band cleaned source map saved to {out_png_clean}")
 
 # Run CMD creation for full calibrated photometry
-make_cmd(df_calib, calib_file, "(all sources)", "")
+make_cmd(df_calib, calib_file, "(all sources)")
 
 # Run CMD creation for cleaned catalog (no stars)
-make_cmd(df_clean, out_file, "(no stars)", "_no_stars")
+make_cmd(df_clean, out_file, "(no stars)")
 
 
 # ----- Create V-band image and CMD with cleaned sources filtered by color index (B-V range) -----
@@ -560,7 +632,7 @@ if "Mag_B" in df_clean.columns and "Mag_V" in df_clean.columns:
     print(f"V-band color-filtered source map saved to {out_png_color}")
 
     # --- create CMD for the color-filtered catalog ---
-    make_cmd(df_color_filtered, out_csv_color, "(no stars, color filtered)", "_no_stars_color_filtered")
+    make_cmd(df_color_filtered, out_csv_color, "(no stars, color filtered)")
 
 else:
     print("Mag_B or Mag_V not found in cleaned catalog. Color-filtered map not created.")

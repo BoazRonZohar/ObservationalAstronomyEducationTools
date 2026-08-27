@@ -59,9 +59,58 @@ HOW IT WORKS
 
 WHAT YOU GET
 
-  CSVs at each stage - raw photometry, the calibration stars, calibrated
-  magnitudes, the members, and the extinction-corrected values - plus the
-  colour-magnitude diagram and an image showing what was detected.
+Written into the folder holding the B-band image. Note that these names are
+FIXED - they do not carry the cluster's name - so running a second cluster
+into the same folder overwrites the first. Give each cluster its own folder.
+
+  Beside the input images
+
+    <input>_bgsub.fits              each image with its background subtracted.
+                                    This is what is measured.
+
+  Every source in the frame
+
+    fluxes_XY_FWHM_Ap.csv           every detection: position, its own FWHM,
+                                    the aperture radius that FWHM gave it,
+                                    and the flux in B and G. Instrumental,
+                                    not yet calibrated.
+    calib_stars_apass.csv           the APASS9 stars found in the field, with
+                                    their catalogue magnitudes. These set the
+                                    zero point. If the calibration looks
+                                    wrong, look here first.
+    fluxes_calibrated.csv           the same sources in real magnitudes
+    fluxes_calibrated_galactic.csv  and after extinction and distance are
+                                    taken out, so the values are absolute
+    fluxes_calibrated_galactic_CMD.png
+                                    the diagram for the whole frame, members
+                                    and field stars together
+
+  Cluster members only
+
+    Everything above still contains stars that merely lie in the same
+    direction. These files are what is left after the membership step -
+    Gaia astrometry for an open cluster, the radius you gave for a globular.
+    THIS IS THE RESULT.
+
+    fluxes_cluster_only.csv                    the members
+    fluxes_cluster_only_calibrated.csv         in real magnitudes
+    fluxes_cluster_only_galactic.csv           extinction and distance removed
+    fluxes_cluster_only_galactic_CMD.png       the cluster's own diagram
+    cluster_G_with_stars.png                   the G image with the members
+                                               marked, so you can see whether
+                                               the selection makes sense
+
+  If you look at three files, look at these:
+
+    calib_stars_apass.csv                 did the calibration have anything
+                                          to work with
+    cluster_G_with_stars.png              did the membership step pick the
+                                          cluster and not the field
+    fluxes_cluster_only_galactic_CMD.png  the diagram, in absolute magnitude
+
+  Comparing the two diagrams is the point. The whole-frame one is a scatter;
+  the members-only one should show a main sequence. If it does not, the
+  membership step is where to look, not the photometry.
 
 The parameters at the top of this file are tuned for the Kinneret frames
 these projects use. On very different data, the detection threshold and the
