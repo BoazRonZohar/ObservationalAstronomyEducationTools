@@ -299,6 +299,29 @@ def get_obs_time_jd(header, path):
     return None
 
 
+def filter_name(header):
+    """Which filter was actually in the beam, for the output file names and
+    plot titles.
+
+    Modern BANZAI headers summarise this in one FILTER keyword. Older
+    reductions only record each filter wheel separately - FILTER1, FILTER2,
+    FILTER3 - most of them parked on 'air' (a clear position, not a filter),
+    and the one actually used is whichever is not. Without this, a frame
+    missing the FILTER keyword fell back to the string "u" - meant as a
+    placeholder, but also the real name of a filter (Sloan u'), so a run with
+    no filter information on it silently claimed to be a u-band observation.
+    A Bessell-V frame from 2012 was labelled "filter u" this way."""
+    empty = {"", "air", "clear", "none", "notpresent", "n/a", "open"}
+    val = str(header.get("FILTER", "")).strip()
+    if val and val.lower() not in empty:
+        return val
+    for key in ("FILTER1", "FILTER2", "FILTER3", "FILTER4"):
+        val = str(header.get(key, "")).strip()
+        if val and val.lower() not in empty:
+            return val
+    return "unknown"
+
+
 # --------------------------------------------------------------------------
 # FWHM measurement (2D Gaussian fit)
 # --------------------------------------------------------------------------
@@ -1249,11 +1272,27 @@ def select_good_comps(stability, min_gap_ratio=1.5, min_keep=2):
     return names_sorted[:best_idx + 1], names_sorted[best_idx + 1:]
 
 
-def recompute_ensemble(df, target_name, comp_names):
+def recompute_ensemble(df, target_name, comp_names, comp_weights=None):
     """(Re-)computes the ensemble columns (n_comps_used, diff_mag,
     mag_comp_minus_target, flux_comp_minus_target, and their _err
     counterparts) using only the given comp_names, in place, for every row
-    of df."""
+    of df.
+
+    comp_weights, when given, is a fixed {comp_name: weight} dict - normally
+    1/measured_stability**2 for each comp, combined in magnitude space. Left
+    out, each comp is weighted every frame by 1/formal_flux_error**2, which is
+    what the CCD noise equation predicts for that frame.
+
+    That formal error tracks a star's brightness, not how steady it actually
+    is. On one real run, the noisiest of five comparison stars (11 mmag
+    point-to-point) had the smallest formal error of the five and so was
+    given the most weight - nearly a third of the ensemble - and the
+    resulting light curve was noisier than every one of the five comparison
+    stars measured individually, this noisiest one included. A fixed weight
+    from each comp's own measured scatter does not have this failure mode,
+    but it needs that scatter measured first, which is why it is only
+    available on a second pass, after the quality checks below have run."""
+    use_fixed = comp_weights is not None
     n_comps_used, diff_mag, mag_diff, flux_diff = [], [], [], []
     mag_diff_err, flux_diff_err = [], []
     for _, row in df.iterrows():
@@ -1277,16 +1316,32 @@ def recompute_ensemble(df, target_name, comp_names):
         if target_ok and fluxes and all_comps_ok:
             fluxes_arr = np.array(fluxes)
             ferrs_arr = np.array(ferrs)
-            with np.errstate(divide="ignore", invalid="ignore"):
-                weights = 1.0 / np.clip(ferrs_arr, 1e-6, None) ** 2
-            if not np.isfinite(weights).any() or weights.sum() <= 0:
-                weights = np.ones_like(fluxes_arr)
-            ensemble_flux_w = float(np.sum(weights * fluxes_arr) / np.sum(weights))
-            ensemble_mag_w = -2.5 * np.log10(ensemble_flux_w) + 25.0
-            target_mag = row[f"{target_name}_mag"]
 
-            ensemble_flux_err = float(np.sqrt(1.0 / np.sum(weights)))
-            ensemble_magerr = 1.0857 * ensemble_flux_err / ensemble_flux_w
+            if use_fixed:
+                weights = np.array([comp_weights.get(c, np.nan) for c in comp_names],
+                                   dtype=float)
+                ok_w = np.isfinite(weights) & (weights > 0)
+                if not ok_w.any():
+                    weights = np.ones(len(comp_names))
+                elif not ok_w.all():
+                    weights = weights.copy()
+                    weights[~ok_w] = np.median(weights[ok_w])
+                mags_arr = -2.5 * np.log10(fluxes_arr) + 25.0
+                ensemble_mag_w = float(np.sum(weights * mags_arr) / np.sum(weights))
+                ensemble_flux_w = float(10 ** (-(ensemble_mag_w - 25.0) / 2.5))
+                ensemble_magerr = float(np.sqrt(1.0 / np.sum(weights)))
+                ensemble_flux_err = ensemble_magerr * ensemble_flux_w / 1.0857
+            else:
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    weights = 1.0 / np.clip(ferrs_arr, 1e-6, None) ** 2
+                if not np.isfinite(weights).any() or weights.sum() <= 0:
+                    weights = np.ones_like(fluxes_arr)
+                ensemble_flux_w = float(np.sum(weights * fluxes_arr) / np.sum(weights))
+                ensemble_mag_w = -2.5 * np.log10(ensemble_flux_w) + 25.0
+                ensemble_flux_err = float(np.sqrt(1.0 / np.sum(weights)))
+                ensemble_magerr = 1.0857 * ensemble_flux_err / ensemble_flux_w
+
+            target_mag = row[f"{target_name}_mag"]
 
             n_comps_used.append(len(fluxes))
             diff_mag.append(-2.5 * np.log10(target_flux / ensemble_flux_w))
@@ -1572,9 +1627,17 @@ def process_all(input_dir, ref_file, star_list_path, args):
                   f"ensemble: {', '.join(rejected_comps)} "
                   f"({len(completeness_failed)} incomplete, {len(badness_rejected)} "
                   f"noisy/drifting; disable with --no_auto_reject_comps)")
-            df = recompute_ensemble(df, config["target_name"], good_comps)
         else:
             print("-> No comparison stars rejected.")
+        # Weighted by each comp's own measured scatter, not by its formal
+        # per-frame flux error - see recompute_ensemble(). Run whether or not
+        # a comp was rejected: the formal weighting used until now is wrong
+        # regardless, and this is the first point in the run where the real
+        # scatter of each surviving comp is known.
+        comp_weights = {c: 1.0 / stability[c] ** 2 for c in good_comps
+                        if np.isfinite(stability.get(c, np.nan)) and stability[c] > 0}
+        df = recompute_ensemble(df, config["target_name"], good_comps,
+                                comp_weights=comp_weights or None)
 
         config["comp_stability"] = stability
         config["comp_drift"] = drift
@@ -2684,8 +2747,14 @@ def measure_channel(frames, plane, stars, ref_idx, cfg, route):
                 good = good2
 
         rejected = list(failed) + list(bad) + list(drifters)
-        if rejected:
-            df = recompute_ensemble(df, target_name, good)
+        # Weighted by each comp's own measured scatter, not by its formal
+        # per-frame flux error - see recompute_ensemble(). Run whether or not
+        # a comp was rejected: the formal weighting used until now is wrong
+        # regardless, and this is the first point where the real scatter of
+        # each surviving comp is known.
+        comp_weights = {c: 1.0 / stability[c] ** 2 for c in good
+                        if np.isfinite(stability.get(c, np.nan)) and stability[c] > 0}
+        df = recompute_ensemble(df, target_name, good, comp_weights=comp_weights or None)
         config.update(comp_stability=stability, comp_drift=drift,
                       comp_tail_offset=tail, comp_completeness=completeness,
                       comp_trend_ratio=trend, drift_rejected=drifters,
@@ -3072,7 +3141,14 @@ def finder_chart(image, stars, config, out_path, target_name, channel, note=""):
     for _i, st in stars.iterrows():
         nm = str(st["name"])
         x, y = float(st.x), float(st.y)
-        if nm == target_name:
+        # The target's row is identified by its role, not by comparing its
+        # name to target_name: stars.name is always "V" for the target (see
+        # pick_stars), while target_name is the real object name ("TrES-3",
+        # "WASP-52", ...). Comparing the two directly meant this branch never
+        # matched, and the target was drawn as an ordinary comparison star -
+        # or, once it also failed to appear in `used`, as "rejected".
+        is_target = str(st.get("role", "")).strip().lower() == "target"
+        if is_target:
             col, lw, lab = "#d62728", 2.4, f"{nm}  (target)"
         elif nm in rejected:
             col, lw, lab = "#999999", 1.2, f"{nm}  rejected"
@@ -3082,7 +3158,7 @@ def finder_chart(image, stars, config, out_path, target_name, channel, note=""):
             col, lw, lab = "#999999", 1.2, f"{nm}  rejected"
         ax.add_patch(Circle((x, y), r, fill=False, ec=col, lw=lw))
         ax.text(x + r * 1.15, y + r * 0.35, lab, color=col, fontsize=9,
-                weight="bold" if nm == target_name else "normal")
+                weight="bold" if is_target else "normal")
 
     n_used = len(used) if used else max(len(stars) - 1, 0)
     line1 = f"{target_name}   -   channel {channel}"
@@ -3386,14 +3462,25 @@ def scan_folder(folder, pattern="*.fits"):
         if not obj:
             skipped.append((p, "no OBJECT in header"))
             continue
+        # Pre-BANZAI LCOGT/Faulkes reductions write OBJECT as "name:blockid",
+        # a per-exposure id appended to the target name - every frame of the
+        # same star then looks like a different target and each ends up alone
+        # in its own group. Modern OBJECT values (e.g. "WASP-52") carry no such
+        # suffix, so this only ever touches the older format.
+        obj = re.sub(r":\d+$", "", obj).strip()
         targets.setdefault(obj, []).append(p)
     return targets, skipped
 
 
 def frame_info(path):
     h = fits.getheader(path)
+    # Used only to sort frames chronologically before measuring them. Some
+    # older reductions (pre-BANZAI LCOGT/Faulkes frames) have no MJD-OBS at
+    # all - get_obs_time_jd() already knows to fall back to MJD and then
+    # DATE-OBS, so it is used here rather than reading MJD-OBS directly.
+    jd = get_obs_time_jd(h, path)
     return dict(path=path, header=h,
-                mjd=float(h.get("MJD-OBS", np.nan)),
+                mjd=float(jd) if jd is not None else np.nan,
                 pa=position_angle(h))
 
 
@@ -3448,6 +3535,38 @@ def choose_reference(frames, n_sample=12):
 # star selection
 # --------------------------------------------------------------------------
 
+def local_source_catalogue(img, header):
+    """A substitute for BANZAI's own CAT extension, for reductions that never
+    had one - pre-BANZAI LCOGT/Faulkes frames among them.
+
+    Only used once, to pick the target and comparison stars on the reference
+    frame. It is not used in measure()'s independent "cat route" cross-check:
+    a source list built from this same image is not an independent check on
+    anything, so that comparison is correctly left to fall back to the "wcs"
+    route alone when no real BANZAI catalogue exists.
+
+    Returns a structured array with the same field names pick_stars() reads
+    from a real CAT extension (x, y, flux, peak, in FITS 1-based pixels), or
+    None if nothing could be detected."""
+    mean, median, std = sigma_clipped_stats(img, sigma=3.0, maxiters=5)
+    fwhm_guess = float(header.get("L1FWHM", 3.0)) / float(header.get("PIXSCALE", 1.0) or 1.0)
+    if not np.isfinite(fwhm_guess) or fwhm_guess <= 0:
+        fwhm_guess = 4.0
+    try:
+        found = DAOStarFinder(fwhm=max(fwhm_guess, 2.0), threshold=6.0 * std)(img - median)
+    except Exception:
+        return None
+    if found is None or len(found) == 0:
+        return None
+    cat = np.zeros(len(found), dtype=[("x", "f8"), ("y", "f8"),
+                                      ("flux", "f8"), ("peak", "f8")])
+    cat["x"] = np.asarray(found["xcentroid"], float) + 1.0   # 0-based -> FITS 1-based
+    cat["y"] = np.asarray(found["ycentroid"], float) + 1.0
+    cat["flux"] = np.asarray(found["flux"], float)
+    cat["peak"] = np.asarray(found["peak"], float)
+    return cat
+
+
 def target_coord(header, radec=None):
     """Where the target is.
 
@@ -3466,15 +3585,16 @@ def target_coord(header, radec=None):
     raise RuntimeError("no target coordinates in the header")
 
 
-def pick_stars(header, cat, bpm, n_comps=12, max_radius=1100, radec=None,
+def pick_stars(header, cat, bpm, img=None, n_comps=12, max_radius=1100, radec=None,
                image_shape=None):
     """Find the target and choose the comparison stars.
 
     Both come out of BANZAI's own catalogue rather than a star finder run
-    here. It is measured from the same frame with the same PSF, it carries a
-    quality flag per source, and using it means the comparison stars this
-    script picks are the same ones anybody else reducing these frames would
-    see.
+    here, when one exists. It is measured from the same frame with the same
+    PSF, it carries a quality flag per source, and using it means the
+    comparison stars this script picks are the same ones anybody else
+    reducing these frames would see. Reductions from before BANZAI never
+    carry this catalogue; local_source_catalogue() stands in for it there.
 
     The target is NOT looked up in that catalogue by shape. Its position is
     already known from CAT-RA/CAT-DEC, so it only needs to be matched to the
@@ -3483,7 +3603,13 @@ def pick_stars(header, cat, bpm, n_comps=12, max_radius=1100, radec=None,
     elongated or in transit, and it has to be measured whatever it looks
     like."""
     if cat is None or len(cat) == 0:
-        raise RuntimeError("this frame has no CAT extension to choose stars from")
+        if img is None:
+            raise RuntimeError("this frame has no CAT extension to choose stars from")
+        cat = local_source_catalogue(img, header)
+        if cat is None or len(cat) == 0:
+            raise RuntimeError("no CAT extension, and no stars could be detected "
+                               "in this frame either")
+        print(" (no BANZAI catalogue - stars found locally)", end="", flush=True)
     w = WCS(header)
     fwhm = float(np.nanmedian(cat["fwhm"])) if "fwhm" in cat.dtype.names else 4.0
     if not np.isfinite(fwhm) or fwhm <= 0:
@@ -3719,8 +3845,14 @@ def _finish(rows, names, cfg, route):
                     drifters.append(c)
 
         rejected = list(failed) + list(bad) + list(drifters)
-        if rejected:
-            df = recompute_ensemble(df, target_name, good)
+        # Weighted by each comp's own measured scatter, not by its formal
+        # per-frame flux error - see recompute_ensemble(). Run whether or not
+        # a comp was rejected: the formal weighting used until now is wrong
+        # regardless, and this is the first point where the real scatter of
+        # each surviving comp is known.
+        comp_weights = {c: 1.0 / stability[c] ** 2 for c in good
+                        if np.isfinite(stability.get(c, np.nan)) and stability[c] > 0}
+        df = recompute_ensemble(df, target_name, good, comp_weights=comp_weights or None)
         config.update(comp_stability=stability, comp_drift=drift,
                       comp_tail_offset=tail, comp_completeness=completeness,
                       comp_trend_ratio=trend, drift_rejected=drifters,
@@ -3977,7 +4109,7 @@ def main():
         ref_idx = choose_reference(keep)
         ref = keep[ref_idx]
         ref_hdr = ref["header"]
-        cname = str(ref_hdr.get("FILTER", "u")).strip() or "filter"
+        cname = filter_name(ref_hdr)
         print(f"  {cname} ...", end="", flush=True)
 
         # Everything the noise equation needs is recorded per frame, so it is
@@ -3989,7 +4121,7 @@ def main():
             ref_img = read_image(ref["path"])
             stars, snap, fwhm, blend_note, how = pick_stars(
                 ref_hdr, read_catalogue(ref["path"]), read_bpm(ref["path"]),
-                n_comps=args.n_comps, radec=over_radec,
+                img=ref_img, n_comps=args.n_comps, radec=over_radec,
                 image_shape=ref_img.shape)
         except Exception as e:
             print(f"\n    star selection failed: {e}")

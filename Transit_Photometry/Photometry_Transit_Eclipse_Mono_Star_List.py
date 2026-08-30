@@ -1173,11 +1173,27 @@ def select_good_comps(stability, min_gap_ratio=1.5, min_keep=2):
     return names_sorted[:best_idx + 1], names_sorted[best_idx + 1:]
 
 
-def recompute_ensemble(df, target_name, comp_names):
+def recompute_ensemble(df, target_name, comp_names, comp_weights=None):
     """(Re-)computes the ensemble columns (n_comps_used, diff_mag,
     mag_comp_minus_target, flux_comp_minus_target, and their _err
     counterparts) using only the given comp_names, in place, for every row
-    of df."""
+    of df.
+
+    comp_weights, when given, is a fixed {comp_name: weight} dict - normally
+    1/measured_stability**2 for each comp, combined in magnitude space. Left
+    out, each comp is weighted every frame by 1/formal_flux_error**2, which is
+    what the CCD noise equation predicts for that frame.
+
+    That formal error tracks a star's brightness, not how steady it actually
+    is. On one real run, the noisiest of five comparison stars (11 mmag
+    point-to-point) had the smallest formal error of the five and so was
+    given the most weight - nearly a third of the ensemble - and the
+    resulting light curve was noisier than every one of the five comparison
+    stars measured individually, this noisiest one included. A fixed weight
+    from each comp's own measured scatter does not have this failure mode,
+    but it needs that scatter measured first, which is why it is only
+    available on a second pass, after the quality checks below have run."""
+    use_fixed = comp_weights is not None
     n_comps_used, diff_mag, mag_diff, flux_diff = [], [], [], []
     mag_diff_err, flux_diff_err = [], []
     for _, row in df.iterrows():
@@ -1201,16 +1217,32 @@ def recompute_ensemble(df, target_name, comp_names):
         if target_ok and fluxes and all_comps_ok:
             fluxes_arr = np.array(fluxes)
             ferrs_arr = np.array(ferrs)
-            with np.errstate(divide="ignore", invalid="ignore"):
-                weights = 1.0 / np.clip(ferrs_arr, 1e-6, None) ** 2
-            if not np.isfinite(weights).any() or weights.sum() <= 0:
-                weights = np.ones_like(fluxes_arr)
-            ensemble_flux_w = float(np.sum(weights * fluxes_arr) / np.sum(weights))
-            ensemble_mag_w = -2.5 * np.log10(ensemble_flux_w) + 25.0
-            target_mag = row[f"{target_name}_mag"]
 
-            ensemble_flux_err = float(np.sqrt(1.0 / np.sum(weights)))
-            ensemble_magerr = 1.0857 * ensemble_flux_err / ensemble_flux_w
+            if use_fixed:
+                weights = np.array([comp_weights.get(c, np.nan) for c in comp_names],
+                                   dtype=float)
+                ok_w = np.isfinite(weights) & (weights > 0)
+                if not ok_w.any():
+                    weights = np.ones(len(comp_names))
+                elif not ok_w.all():
+                    weights = weights.copy()
+                    weights[~ok_w] = np.median(weights[ok_w])
+                mags_arr = -2.5 * np.log10(fluxes_arr) + 25.0
+                ensemble_mag_w = float(np.sum(weights * mags_arr) / np.sum(weights))
+                ensemble_flux_w = float(10 ** (-(ensemble_mag_w - 25.0) / 2.5))
+                ensemble_magerr = float(np.sqrt(1.0 / np.sum(weights)))
+                ensemble_flux_err = ensemble_magerr * ensemble_flux_w / 1.0857
+            else:
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    weights = 1.0 / np.clip(ferrs_arr, 1e-6, None) ** 2
+                if not np.isfinite(weights).any() or weights.sum() <= 0:
+                    weights = np.ones_like(fluxes_arr)
+                ensemble_flux_w = float(np.sum(weights * fluxes_arr) / np.sum(weights))
+                ensemble_mag_w = -2.5 * np.log10(ensemble_flux_w) + 25.0
+                ensemble_flux_err = float(np.sqrt(1.0 / np.sum(weights)))
+                ensemble_magerr = 1.0857 * ensemble_flux_err / ensemble_flux_w
+
+            target_mag = row[f"{target_name}_mag"]
 
             n_comps_used.append(len(fluxes))
             diff_mag.append(-2.5 * np.log10(target_flux / ensemble_flux_w))
@@ -1496,9 +1528,17 @@ def process_all(input_dir, ref_file, star_list_path, args):
                   f"ensemble: {', '.join(rejected_comps)} "
                   f"({len(completeness_failed)} incomplete, {len(badness_rejected)} "
                   f"noisy/drifting; disable with --no_auto_reject_comps)")
-            df = recompute_ensemble(df, config["target_name"], good_comps)
         else:
             print("-> No comparison stars rejected.")
+        # Weighted by each comp's own measured scatter, not by its formal
+        # per-frame flux error - see recompute_ensemble(). Run whether or not
+        # a comp was rejected: the formal weighting used until now is wrong
+        # regardless, and this is the first point in the run where the real
+        # scatter of each surviving comp is known.
+        comp_weights = {c: 1.0 / stability[c] ** 2 for c in good_comps
+                        if np.isfinite(stability.get(c, np.nan)) and stability[c] > 0}
+        df = recompute_ensemble(df, config["target_name"], good_comps,
+                                comp_weights=comp_weights or None)
 
         config["comp_stability"] = stability
         config["comp_drift"] = drift
