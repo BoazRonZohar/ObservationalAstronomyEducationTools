@@ -497,9 +497,12 @@ def extract_reference_stars(fits_file, df_B, df_V,
     fov_ra = naxis1 * scale_deg
     fov_dec = naxis2 * scale_deg
 
-    Vizier.ROW_LIMIT = -1
+    # row_limit has to be passed to the constructor, not set on the class
+    # afterwards - see the same fix in Cluster_CMD.py's get_apass_calib_stars
+    # for why: doing it on the class leaves a freshly constructed instance at
+    # astroquery's default of 50 rows, silently.
     v = Vizier(columns=["RAJ2000","DEJ2000","Bmag","Vmag"],
-               column_filters={"Vmag":"<%.2f" % mag_limit})
+               column_filters={"Vmag":"<%.2f" % mag_limit}, row_limit=-1)
     result = v.query_region(
         SkyCoord(ra_center, dec_center, unit="deg"),
         width=f"{fov_ra}d", height=f"{fov_dec}d",
