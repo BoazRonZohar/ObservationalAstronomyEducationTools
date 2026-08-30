@@ -133,6 +133,7 @@ from astroquery.vizier import Vizier
 from astropy.coordinates import SkyCoord
 import astropy.units as u
 from scipy.spatial import cKDTree
+import astroalign as aa
 import matplotlib.pyplot as plt
 
 
@@ -147,8 +148,36 @@ READ_NOISE_E = 5.0      # detector read noise in electrons (used for noise estim
 
 XY_MATCH_TOLERANCE = 15.0  # pixels
 
+# Matching the B and G detections to each other, after registering B onto G's
+# pixel grid - see the note beside where this is used. On real M67 frames,
+# going through each frame's own WCS left a few pixels of residual that grew
+# with distance from the field centre - about 1 degree of real, uncorrected
+# rotation between the two exposures, more than a simple TAN plate solution
+# captures reliably over a 2400 px field. Registering directly from the star
+# patterns (astroalign, below) removes that; this tolerance is what is left
+# over after that - mostly centroiding noise, not registration error.
+BG_MATCH_TOLERANCE = 5.0  # pixels, in G's own pixel grid
+
+# Sanity check on the astroalign fit: B and G come off the same telescope, so
+# the pixel scale between them should be the same to a fraction of a percent.
+# A fitted scale far from 1 means astroalign found too few real star pairs to
+# trust - usually a sparse field - and the WCS-based fallback is used instead.
+ASTROALIGN_MAX_SCALE_ERROR = 0.05  # 5%
+
 # --- Compute RA/DEC for every star using WCS with RA_Dec_TOLERANCE arcsec tolerance ---
 RA_Dec_TOLERANCE = 60    # arcsec
+
+# How close a detected star has to be to an APASS catalogue entry to be
+# treated as that star, in get_apass_calib_stars(). This used to default to
+# RA_Dec_TOLERANCE (60 arcsec - about 81 px on these frames), which is not a
+# match radius for one star, it is most of the frame: on M67, 8 of the 10
+# "calibration stars" this produced shared one of just two catalogue
+# positions, at detected pixel positions up to 130 px apart from each other -
+# different real stars in the image, all credited with the catalogue
+# magnitude of whichever bright APASS star happened to be within 81 px of
+# them. A few arcsec is generous for how well two independent measurements of
+# the same star agree.
+APASS_MATCH_RADIUS = 3.0  # arcsec
 
 
 # ------------------- Interactive user input -------------------
@@ -339,7 +368,7 @@ def run_photometry(filename, band):
 # ------------------- Calibration stars from APASS -------------------
 
 
-def get_apass_calib_stars(fits_file, n_stars=10, radius_deg=0.3, match_radius_arcsec = RA_Dec_TOLERANCE):
+def get_apass_calib_stars(fits_file, n_stars=10, radius_deg=0.3, match_radius_arcsec = APASS_MATCH_RADIUS):
     """
     Extract calibration stars from APASS DR9 for a given FITS image.
 
@@ -353,7 +382,7 @@ def get_apass_calib_stars(fits_file, n_stars=10, radius_deg=0.3, match_radius_ar
         Search radius around the image center (in degrees).
     match_radius_arcsec : float
         Maximum allowed separation between detected star and APASS source [arcsec].
-        Default = 60 arcsec (1 arcmin).
+        Default = 3 arcsec.
 
     Returns
     -------
@@ -378,9 +407,16 @@ def get_apass_calib_stars(fits_file, n_stars=10, radius_deg=0.3, match_radius_ar
     ra_c, dec_c = w.all_pix2world(nx/2, ny/2, 0)
 
     # query APASS DR9
-    Vizier.ROW_LIMIT = -1
+    #
+    # row_limit has to be passed to the constructor, not set on the class
+    # afterwards: "Vizier.ROW_LIMIT = -1" here left the new instance's own
+    # ROW_LIMIT at astroquery's default of 50, silently - not an error, just
+    # 50 rows returned instead of however many APASS actually has. On a
+    # crowded globular cluster field this mattered: the real count was 301,
+    # and with only 50 of them to try to match against, 2,913 detected stars
+    # in a small field found exactly one clean, unambiguous pairing.
     catalog = "II/336/apass9"
-    result = Vizier(columns=["RAJ2000","DEJ2000","Bmag","Vmag"]).query_region(
+    result = Vizier(columns=["RAJ2000","DEJ2000","Bmag","Vmag"], row_limit=-1).query_region(
         SkyCoord(ra=ra_c*u.deg, dec=dec_c*u.deg),
         radius=radius_deg*u.deg,
         catalog=catalog
@@ -398,7 +434,7 @@ def get_apass_calib_stars(fits_file, n_stars=10, radius_deg=0.3, match_radius_ar
         c_img = SkyCoord(ra*u.deg, dec*u.deg)
         c_cat = SkyCoord(apass["RA"].values*u.deg, apass["DEC"].values*u.deg)
         idx, sep2d, _ = c_img.match_to_catalog_sky(c_cat)
-        if sep2d.arcsec < match_radius_arcsec:  # default 60 arcsec = 1 arcmin
+        if sep2d.arcsec < match_radius_arcsec:  # default 3 arcsec
             stars.append({
                 "X": x,
                 "Y": y,
@@ -535,6 +571,49 @@ def get_cluster_members(cluster_name, fits_file, cluster_type="O",
     return members_df
 
 
+# ------------------- Registering B onto G -------------------
+
+def register_B_onto_G(B_img, G_img, xB, yB, fits_file_B, fits_file_G):
+    """Where each B-image position (xB, yB) lands in G's pixel grid.
+
+    B and G are separate exposures - the telescope moves between them, if
+    only by a little - so their pixel grids do not coincide, and by how much
+    is not knowable in advance: it depends on the mount, the dither, how long
+    the filter change took. On one real pair of M67 frames it was about 18 px
+    of shift plus roughly a degree of rotation - enough that not one of over
+    a thousand detected stars shared a rounded pixel between the two images.
+
+    astroalign finds the registration directly from the star patterns in
+    these two specific images - it does not assume any telescope, field, or
+    plate scale, and does not depend on how good either WCS solution is. That
+    matters here: going through the WCS on the same M67 frames left several
+    pixels of residual that grew toward the field edges, because a plain TAN
+    plate solution does not capture a real degree of rotation as cleanly as
+    matching the star pattern itself does.
+
+    Falls back to each frame's own WCS only if astroalign cannot find enough
+    matching stars - a very sparse field - or its fitted scale is not
+    plausible for two frames from the same telescope, which is a sign the fit
+    is not trustworthy rather than a sign the telescope changed."""
+    try:
+        transf, (src_list, _tgt_list) = aa.find_transform(B_img, G_img)
+        if abs(transf.scale - 1.0) > ASTROALIGN_MAX_SCALE_ERROR:
+            raise ValueError(f"fitted scale {transf.scale:.3f} is not plausible "
+                             f"for two frames from the same telescope")
+        xy = transf(np.column_stack([xB, yB]))
+        print(f"[out] registered B onto G from {len(src_list)} matched star "
+             f"pairs (astroalign): shift ({transf.translation[0]:+.1f}, "
+             f"{transf.translation[1]:+.1f}) px, rotation "
+             f"{np.degrees(transf.rotation):+.2f} deg, scale {transf.scale:.4f}")
+        return xy[:, 0], xy[:, 1]
+    except Exception as e:
+        print(f"[out] astroalign registration failed ({e}) - "
+             f"falling back to each frame's own WCS")
+        wcs_B = WCS(fits.getheader(fits_file_B))
+        wcs_G = WCS(fits.getheader(fits_file_G))
+        ra_B, dec_B = wcs_B.all_pix2world(xB, yB, 0)
+        return wcs_G.all_world2pix(ra_B, dec_B, 0)
+
 
 # ------------------- Run -------------------
 print("=== Cluster Photometry Interactive Input ===") 
@@ -583,20 +662,53 @@ out_csv = os.path.join(_outdir, "fluxes_XY_FWHM_Ap.csv")
 dfG = run_photometry(fits_file_G, "G")
 dfB = run_photometry(fits_file_B, "B")
 
-# join on nearest pixel
-dfG["X_int"] = dfG["X"].round().astype(int)
-dfG["Y_int"] = dfG["Y"].round().astype(int)
-dfB["X_int"] = dfB["X"].round().astype(int)
-dfB["Y_int"] = dfB["Y"].round().astype(int)
+# Match B detections to G detections by where they actually fall, not by an
+# identical rounded pixel - the two images are separate exposures and their
+# pixel grids essentially never coincide exactly. On one real pair of M67
+# frames, taken 11 minutes apart, the two grids were about 18 px apart at the
+# field centre plus roughly a degree of rotation: not one of over a thousand
+# detected stars in either band then shared a rounded pixel with its
+# counterpart, and the matched table came out with zero rows.
+#
+# register_B_onto_G() finds the true registration from the star patterns
+# themselves (astroalign), falling back to each frame's own WCS only if that
+# is not possible. wcs_G is kept: it is also used further down, to place the
+# APASS calibration stars and the cluster's own catalogue members onto this
+# same pixel grid.
+wcs_G = WCS(fits.getheader(fits_file_G))
+B_img = fits.getdata(fits_file_B, ext=0).astype(float)
+G_img = fits.getdata(fits_file_G, ext=0).astype(float)
+xB_in_G, yB_in_G = register_B_onto_G(B_img, G_img, dfB["X"].values, dfB["Y"].values,
+                                     fits_file_B, fits_file_G)
 
-df = pd.merge(dfG[["X_int","Y_int","X","Y","FWHM","Aperture_Radius","Flux_G"]],
-              dfB[["X_int","Y_int","Flux_B"]],
-              on=["X_int","Y_int"], how="inner")
+tree = cKDTree(dfG[["X", "Y"]].values)
+dist, idx = tree.query(np.column_stack([xB_in_G, yB_in_G]),
+                       distance_upper_bound=BG_MATCH_TOLERANCE)
 
-df = df[["X","Y","FWHM","Aperture_Radius","Flux_B","Flux_G"]]
+# If more than one B star lands within tolerance of the same G star - which
+# happens in a crowded field - only the closer of the two is kept, so that G
+# star's flux is not duplicated onto two rows.
+best_for_g = {}
+for i in range(len(dfB)):
+    if dist[i] == np.inf:
+        continue
+    j = int(idx[i])
+    if j not in best_for_g or dist[i] < best_for_g[j][1]:
+        best_for_g[j] = (i, dist[i])
+
+rows = []
+for j, (i, _d) in best_for_g.items():
+    g, b = dfG.iloc[j], dfB.iloc[i]
+    rows.append([g["X"], g["Y"], g["FWHM"], g["Aperture_Radius"],
+                b["Flux_B"], g["Flux_G"]])
+df = pd.DataFrame(rows, columns=["X", "Y", "FWHM", "Aperture_Radius",
+                                 "Flux_B", "Flux_G"])
+print(f"[out] matched {len(df):,} stars between the {len(dfG):,} found in G "
+     f"and the {len(dfB):,} found in B (within {BG_MATCH_TOLERANCE:.0f} px "
+     f"of each other, in G's pixel grid, after registration)")
 
 df.to_csv(out_csv, index=False)
-print(f"[out] wrote {out_csv}")  
+print(f"[out] wrote {out_csv}")
    
 # Run calibration star extraction on the B-band image
 try:
@@ -616,9 +728,17 @@ try:
         df_flux = pd.read_csv(flux_csv)
         df_calib = pd.read_csv(calib_csv)
 
-        # KDTree matching on X,Y with tolerance 5 pixels
+        # calib_stars_apass.csv carries each calibration star's real sky
+        # position (RA, DEC) from the APASS match, and also an X, Y - but that
+        # X, Y is in B's own pixel grid, since get_apass_calib_stars() detects
+        # stars on the B image only. df_flux's X, Y are in G's pixel grid (see
+        # the sky-based B/G match above). Recomputing X, Y from each
+        # calibration star's own RA/DEC through G's WCS puts both tables in
+        # the same frame it is actually being matched against.
+        calX, calY = wcs_G.all_world2pix(df_calib["RA"].values, df_calib["DEC"].values, 0)
+
         flux_coords = df_flux[["X","Y"]].values
-        calib_coords = df_calib[["X","Y"]].values
+        calib_coords = np.column_stack([calX, calY])
         tree = cKDTree(flux_coords)
         dist, idx = tree.query(calib_coords, distance_upper_bound = XY_MATCH_TOLERANCE)
 
@@ -719,9 +839,10 @@ try:
         df_cluster = pd.read_csv(cluster_csv)
         
         # --- Compute RA/DEC for every star using WCS with RA_Dec_TOLERANCE arcsec tolerance ---
-        hdr = fits.getheader(fits_file_B, ext=0)
-        w = WCS(hdr)
-        ra, dec = w.all_pix2world(df_cal["X"].values, df_cal["Y"].values, 0)
+        # df_cal's X, Y are in G's pixel grid (it descends from fluxes_XY_FWHM_Ap.csv,
+        # see the sky-based B/G match above) - so this has to go through G's WCS,
+        # not B's, or every position comes out shifted by the B/G frame offset.
+        ra, dec = wcs_G.all_pix2world(df_cal["X"].values, df_cal["Y"].values, 0)
         
         # round RA/DEC to nearest RA_Dec_TOLERANCE arcsec (i.e. 1/60 degree)
         tol_deg = RA_Dec_TOLERANCE / 3600.0  # 60 arcsec in degrees
@@ -739,15 +860,24 @@ try:
         tree = cKDTree(cal_coords)
         dist, idx = tree.query(cluster_coords, distance_upper_bound=XY_MATCH_TOLERANCE)
 
-        matches = []
+        # If two catalogue members (a crowded field can have close pairs) both
+        # land within tolerance of the same measured star, only the closer of
+        # the two is kept - otherwise that one star's photometry is written
+        # out twice, as two "different" members with identical flux.
+        best_for_j = {}
         for i, j in enumerate(idx):
             if j < len(df_cal) and dist[i] != np.inf:
-                row = df_cal.iloc[j].copy()
-                # Preserve extra info from cluster-only file (RA, DEC, Prob)
-                #row["RA"] = df_cluster.iloc[i].get("RA", np.nan)
-                #row["DEC"] = df_cluster.iloc[i].get("DEC", np.nan)
-                row["Prob"] = df_cluster.iloc[i].get("Prob", np.nan)
-                matches.append(row)
+                if j not in best_for_j or dist[i] < best_for_j[j][1]:
+                    best_for_j[j] = (i, dist[i])
+
+        matches = []
+        for j, (i, _d) in best_for_j.items():
+            row = df_cal.iloc[j].copy()
+            # Preserve extra info from cluster-only file (RA, DEC, Prob)
+            #row["RA"] = df_cluster.iloc[i].get("RA", np.nan)
+            #row["DEC"] = df_cluster.iloc[i].get("DEC", np.nan)
+            row["Prob"] = df_cluster.iloc[i].get("Prob", np.nan)
+            matches.append(row)
 
         if matches:
             cluster_calib = pd.DataFrame(matches)
@@ -771,10 +901,9 @@ try:
         df_gal = pd.read_csv(gal_csv)
         df_cluster = pd.read_csv(cluster_csv)
 
-                # --- Compute RA/DEC for every star using WCS with RA_Dec_TOLERANCE arcsec tolerance ---
-        hdr = fits.getheader(fits_file_B, ext=0)  # use B-band header with WCS
-        w = WCS(hdr)
-        ra, dec = w.all_pix2world(df_gal["X"].values, df_gal["Y"].values, 0)
+        # --- Compute RA/DEC for every star using WCS with RA_Dec_TOLERANCE arcsec tolerance ---
+        # df_gal's X, Y are in G's pixel grid, same reasoning as the block above.
+        ra, dec = wcs_G.all_pix2world(df_gal["X"].values, df_gal["Y"].values, 0)
 
         # round RA/DEC to nearest RA_Dec_TOLERANCE arcsec (i.e. 1/60 degree)
         tol_deg = RA_Dec_TOLERANCE  / 3600.0  # 60 arcsec in degrees
@@ -792,15 +921,24 @@ try:
         tree = cKDTree(gal_coords)
         dist, idx = tree.query(cluster_coords, distance_upper_bound=XY_MATCH_TOLERANCE)
 
-        matches = []
+        # If two catalogue members (a crowded field can have close pairs) both
+        # land within tolerance of the same measured star, only the closer of
+        # the two is kept - otherwise that one star's photometry is written
+        # out twice, as two "different" members with identical flux.
+        best_for_j = {}
         for i, j in enumerate(idx):
             if j < len(df_gal) and dist[i] != np.inf:
-                row = df_gal.iloc[j].copy()
-                # Preserve RA, DEC, Prob from cluster-only file
-                #row["RA"] = df_cluster.iloc[i].get("RA", np.nan)
-                #row["DEC"] = df_cluster.iloc[i].get("DEC", np.nan)
-                row["Prob"] = df_cluster.iloc[i].get("Prob", np.nan)
-                matches.append(row)
+                if j not in best_for_j or dist[i] < best_for_j[j][1]:
+                    best_for_j[j] = (i, dist[i])
+
+        matches = []
+        for j, (i, _d) in best_for_j.items():
+            row = df_gal.iloc[j].copy()
+            # Preserve RA, DEC, Prob from cluster-only file
+            #row["RA"] = df_cluster.iloc[i].get("RA", np.nan)
+            #row["DEC"] = df_cluster.iloc[i].get("DEC", np.nan)
+            row["Prob"] = df_cluster.iloc[i].get("Prob", np.nan)
+            matches.append(row)
 
         if matches:
             cluster_gal = pd.DataFrame(matches)
