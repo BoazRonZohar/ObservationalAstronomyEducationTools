@@ -10,8 +10,8 @@ Written for student projects on star clusters.
 
 WHAT IT DOES
 
-Takes one B-band and one G-band image of a star cluster and produces its
-colour-magnitude diagram.
+Takes one B-band and one V (or G) band image of a star cluster and produces
+its colour-magnitude diagram.
 
 A cluster is the closest astronomy comes to a controlled experiment: the
 stars formed together, sit at the same distance, and are seen through the
@@ -21,7 +21,7 @@ a point set by the cluster's age - which is how a cluster is dated.
 
 WHAT YOU NEED
 
-  two FITS images of the same cluster, one in B and one in G, plate-solved
+  two FITS images of the same cluster, one in B and one in V (or G), plate-solved
 
 TWO KINDS OF CLUSTER, and the difference matters
 
@@ -98,15 +98,15 @@ cluster its own folder.
     fluxes_cluster_only_calibrated.csv         in real magnitudes
     fluxes_cluster_only_galactic.csv           extinction and distance removed
     fluxes_cluster_only_galactic_CMD.png       the cluster's own diagram
-    cluster_G_with_stars.png                   the G image with the members
-                                               marked, so you can see whether
-                                               the selection makes sense
+    cluster_with_stars.png                     the second-band image with the
+                                               members marked, so you can see
+                                               whether the selection makes sense
 
   If you look at three files, look at these:
 
     calib_stars_apass.csv                 did the calibration have anything
                                           to work with
-    cluster_G_with_stars.png              did the membership step pick the
+    cluster_with_stars.png                 did the membership step pick the
                                           cluster and not the field
     fluxes_cluster_only_galactic_CMD.png  the diagram, in absolute magnitude
 
@@ -640,7 +640,7 @@ Cluster_distance = float(input("Enter Cluster Distance (PC): (EXP: 850) "))
 A_V = float(input("Enter Galactic extinction coefficient A_V (mag): (EXP: 0.13) "))
 E_BV = float(input("Enter Galactic color excess E(B-V): (EXP: 0.041) "))
 fits_file_B      = _ask("Path to B-band FITS image", r"D:\example_B.fts", str)
-fits_file_G      = _ask("Path to G-band FITS image", r"D:\example_G.fts", str)
+fits_file_G      = _ask("Path to V (or G) band FITS image", r"D:\example_G.fts", str)
 fits_file_B = _norm_path(fits_file_B)
 fits_file_G = _norm_path(fits_file_G)
 
@@ -993,9 +993,12 @@ try:
                 plt.figure()
                 plt.scatter(df["Color_index_corr"], df["Mag_V_corr_copy"], s=10, color="black")
                 plt.gca().invert_yaxis()  # brighter = up
+                plt.xlim(0, 2)  # the cluster sequence sits in here; a few
+                                # stray points far outside it should not
+                                # squeeze the real spread down to nothing
                 plt.xlabel("Color index (B−V)")
                 plt.ylabel("V magnitude (corrected)")
-                plt.title(f"{cluster_name} ({cluster_type}), d={Cluster_distance} pc, A_V={A_V}, E(B−V)={E_BV}")
+                plt.title(f"{cluster_name}, d={Cluster_distance} pc, A_V={A_V}, E(B−V)={E_BV}")
 
                 # save and show plot
                 plot_path = fpath.replace(".csv", "_CMD.png")
@@ -1035,11 +1038,11 @@ try:
         plt.scatter(df_flux["X"], df_flux["Y"], 
                     s=30, edgecolor="red", facecolor="none", lw=1)
 
-        plt.title(f"{cluster_name} - G-band with measured stars")
+        plt.title(f"{cluster_name} - measured stars")
         plt.xlabel("X [pix]")
         plt.ylabel("Y [pix]")
 
-        out_img_path = os.path.join(_outdir, "cluster_G_with_stars.png")
+        out_img_path = os.path.join(_outdir, "cluster_with_stars.png")
         plt.savefig(out_img_path, dpi=150)
         plt.show()
 
