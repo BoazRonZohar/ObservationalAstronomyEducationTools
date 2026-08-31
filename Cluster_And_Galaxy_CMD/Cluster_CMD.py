@@ -42,8 +42,10 @@ WHAT IT ASKS YOU
   cluster name
   cluster radius in pixels        globular clusters only
   distance in parsecs             turns apparent magnitude into absolute
-  galactic extinction A_V         corrects the brightness
-  colour excess E(B-V)            corrects the colour
+  colour excess E(B-V)            corrects both the colour and the brightness.
+                                  A_V is not asked for separately: it is
+                                  3.1 x E(B-V), so asking for both would let
+                                  an impossible pair through unnoticed
   the two FITS paths
 
 HOW IT WORKS
@@ -145,6 +147,10 @@ K_ANNULUS_IN = 2      # inner radius of background annulus, in units of FWHM
 K_ANNULUS_OUT = 4     # outer radius of background annulus, in units of FWHM
 GAIN_E_PER_ADU = 1.0    # CCD gain: electrons per ADU (used for noise estimation if needed)
 READ_NOISE_E = 5.0      # detector read noise in electrons (used for noise estimation if needed)
+
+R_V = 3.1               # A_V / E(B-V) for dust in our own galaxy. A_V is
+                        # derived from the colour excess rather than asked for
+                        # separately - see where E(B-V) is read in.
 
 XY_MATCH_TOLERANCE = 15.0  # pixels
 
@@ -636,9 +642,21 @@ else:
 
         
 Cluster_distance = float(input("Enter Cluster Distance (PC): (EXP: 850) "))
-# ask user for galactic extinction coefficients
-A_V = float(input("Enter Galactic extinction coefficient A_V (mag): (EXP: 0.13) "))
+# Only the colour excess is asked for. A_V is not independent of it - it is
+# R_V x E(B-V) - so asking for both lets a pair through that cannot both be
+# true, with nothing to catch it. The pair this script used to suggest as an
+# example, A_V 0.13 with E(B-V) 0.041, implies R_V = 3.17, close enough to the
+# standard 3.1 that the difference never showed; a typo in either box would
+# not have been noticed at all.
+#
+# Unlike Galaxy_CMD.py, this value is not offered from the IRSA dust maps.
+# Those give the extinction through the whole Galaxy in a given direction,
+# which is the right quantity for a galaxy seen behind all of it, but not for
+# a cluster sitting inside it. On M67 and M12 the full-line-of-sight value
+# came out 20-30% below the published cluster values.
 E_BV = float(input("Enter Galactic color excess E(B-V): (EXP: 0.041) "))
+A_V = R_V * E_BV
+print(f"Using E(B-V) = {E_BV}, A_V = R_V x E(B-V) = {A_V:.3f}")
 fits_file_B      = _ask("Path to B-band FITS image", r"D:\example_B.fts", str)
 fits_file_G      = _ask("Path to V (or G) band FITS image", r"D:\example_G.fts", str)
 fits_file_B = _norm_path(fits_file_B)
