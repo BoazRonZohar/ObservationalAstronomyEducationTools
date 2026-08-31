@@ -176,6 +176,7 @@ from astropy.wcs import WCS
 from astroquery.vizier import Vizier
 from astropy.coordinates import SkyCoord
 import astropy.units as u
+import astroalign as aa
 
 
 # ===================== PARAMETERS =====================
@@ -223,6 +224,17 @@ BG_SUB_FUNC = np.nanmedian       # Function used to compute and subtract backgro
 # times the colour scatter of real ones and made up a quarter of the catalogue.
 MATCH_SCALE = 1.5                # Tolerance as a multiple of the measured FWHM
 MATCH_TOLERANCE_MIN = 3.0        # ...but never tighter than this, in pixels
+
+# B is registered onto V's pixel grid before any matching happens (see
+# register_B_onto_V) - B and V are separate exposures and generally do not
+# share a pixel grid at all. On one real pair of galaxy frames the shift
+# turned out to be under 2 px and this made no visible difference; on a pair
+# of star-cluster frames from the same kind of pipeline it was 18 px plus a
+# degree of rotation, and every match tolerance above was then measuring the
+# wrong thing. A sanity check on the fitted scale catches a registration
+# astroalign could not really trust: B and V come off the same telescope, so
+# the pixel scale between them should agree to a fraction of a percent.
+ASTROALIGN_MAX_SCALE_ERROR = 0.05  # 5%
 
 # Reference star parameters
 REF_MAG_LIMIT = 20.0             # Catalog magnitude limit for selecting reference stars
@@ -456,13 +468,58 @@ def process_fits(filename, band):
           f" {n_negative:,} with negative flux", flush=True)
     return results
 
+# ---------------- REGISTERING B ONTO V ----------------
+def register_B_onto_V(B_img, V_img, xB, yB, fits_file_B, fits_file_V):
+    """Where each B-image position (xB, yB) lands in V's pixel grid.
+
+    B and V are separate exposures, and nothing guarantees their pixel grids
+    coincide - the telescope can move between them by an amount that depends
+    on the mount, the dither, how long the filter change took. Every match
+    tolerance in this file is only correct once that is corrected for.
+
+    astroalign finds the registration directly from the star patterns in
+    these two specific images - it does not assume any telescope, field, or
+    plate scale, and does not depend on how good either WCS solution is.
+    Falls back to each frame's own WCS only if astroalign cannot find enough
+    matching stars, or its fitted scale is not plausible for two frames from
+    the same telescope."""
+    try:
+        transf, (src_list, _tgt_list) = aa.find_transform(B_img, V_img)
+        if abs(transf.scale - 1.0) > ASTROALIGN_MAX_SCALE_ERROR:
+            raise ValueError(f"fitted scale {transf.scale:.3f} is not plausible "
+                             f"for two frames from the same telescope")
+        xy = transf(np.column_stack([xB, yB]))
+        print(f"   registered B onto V from {len(src_list)} matched star "
+             f"pairs (astroalign): shift ({transf.translation[0]:+.1f}, "
+             f"{transf.translation[1]:+.1f}) px, rotation "
+             f"{np.degrees(transf.rotation):+.2f} deg, scale {transf.scale:.4f}",
+             flush=True)
+        return xy[:, 0], xy[:, 1]
+    except Exception as e:
+        print(f"   astroalign registration failed ({e}) - "
+             f"falling back to each frame's own WCS", flush=True)
+        wcs_B = WCS(fits.getheader(fits_file_B))
+        wcs_V = WCS(fits.getheader(fits_file_V))
+        ra_B, dec_B = wcs_B.all_pix2world(xB, yB, 0)
+        return wcs_V.all_world2pix(ra_B, dec_B, 0)
+
+
 # ---------------- MATCHING FUNCTION ----------------
-def match_sources(df_B, df_V, tol):
-    """Match B and V sources by nearest (X,Y) within tolerance."""
+def match_sources(df_B, df_V, tol, xB_reg=None, yB_reg=None):
+    """Match B and V sources by nearest (X,Y) within tolerance.
+
+    xB_reg/yB_reg, when given, are each B source's position after
+    register_B_onto_V() - what the matching distance is measured on. df_B's
+    own X/Y are still what gets stored in the output, since aperture
+    photometry on the B image needs B's own pixel coordinates, not V's."""
+    if xB_reg is None:
+        xB_reg = df_B["X"].values
+    if yB_reg is None:
+        yB_reg = df_B["Y"].values
     matched_rows = []
     used_V = set()
-    for _, rowB in df_B.iterrows():
-        xB, yB = rowB["X"], rowB["Y"]
+    for i, (_, rowB) in enumerate(df_B.iterrows()):
+        xB, yB = xB_reg[i], yB_reg[i]
         dists = np.sqrt((df_V["X"] - xB)**2 + (df_V["Y"] - yB)**2)
         min_idx = dists.idxmin()
         if dists[min_idx] <= tol and min_idx not in used_V:
@@ -478,11 +535,22 @@ def match_sources(df_B, df_V, tol):
     return pd.DataFrame(matched_rows)
 
 # ---------------- REFERENCE STARS (Vizier) ----------------
-def extract_reference_stars(fits_file, df_B, df_V,
+def extract_reference_stars(fits_file, df_B, df_V, xB_reg=None, yB_reg=None,
                             mag_limit=15.0,
                             catalog="II/336/apass9",
                             fwhm_hint=4.0):
-    """Query Vizier and return reference stars with catalog mags, measured fluxes and positions (B,V)."""
+    """Query Vizier and return reference stars with catalog mags, measured fluxes and positions (B,V).
+
+    fits_file is V's - catalogue positions come out in V's pixel grid. df_V's
+    own X/Y are already in that same grid, but df_B's are not (B is a
+    separate exposure), so xB_reg/yB_reg - B's positions after
+    register_B_onto_V() - are what the catalogue is actually matched against
+    in B. The native df_B X/Y are still what gets stored, for photometry on
+    the B image itself."""
+    if xB_reg is None:
+        xB_reg = df_B["X"].values
+    if yB_reg is None:
+        yB_reg = df_B["Y"].values
     # How far from the catalogue position a detection may be and still be
     # accepted as that star. Tied to the seeing, so it stays a fraction of a
     # star's width rather than a flat number of pixels.
@@ -528,17 +596,19 @@ def extract_reference_stars(fits_file, df_B, df_V,
 
     flux_B, flux_V = [], []
     XB_meas, YB_meas, XV_meas, YV_meas = [], [], [], []
+    XB_reg_meas, YB_reg_meas = [], []
 
     for _, row in df_ref.iterrows():
-        dB = np.sqrt((df_B["X"] - row["X_pix"])**2 + (df_B["Y"] - row["Y_pix"])**2)
+        dB = np.sqrt((xB_reg - row["X_pix"])**2 + (yB_reg - row["Y_pix"])**2)
         dV = np.sqrt((df_V["X"] - row["X_pix"])**2 + (df_V["Y"] - row["Y_pix"])**2)
 
         if dB.min() <= flux_tol:
-            idxB = dB.idxmin()
-            fB = df_B.loc[idxB, "Flux"]
-            XB, YB = df_B.loc[idxB, "X"], df_B.loc[idxB, "Y"]
+            idxB = int(np.argmin(dB))
+            fB = df_B.iloc[idxB]["Flux"]
+            XB, YB = df_B.iloc[idxB]["X"], df_B.iloc[idxB]["Y"]
+            XB_reg, YB_reg = xB_reg[idxB], yB_reg[idxB]
         else:
-            fB, XB, YB = np.nan, np.nan, np.nan
+            fB, XB, YB, XB_reg, YB_reg = np.nan, np.nan, np.nan, np.nan, np.nan
 
         if dV.min() <= flux_tol:
             idxV = dV.idxmin()
@@ -553,6 +623,8 @@ def extract_reference_stars(fits_file, df_B, df_V,
         YB_meas.append(YB)
         XV_meas.append(XV)
         YV_meas.append(YV)
+        XB_reg_meas.append(XB_reg)
+        YB_reg_meas.append(YB_reg)
 
     df_ref["Flux_B_measured"] = flux_B
     df_ref["Flux_V_measured"] = flux_V
@@ -565,16 +637,23 @@ def extract_reference_stars(fits_file, df_B, df_V,
     n_found = len(df_ref)
     df_ref = df_ref.dropna(subset=["Flux_B_measured","Flux_V_measured"])
     n_bothbands = len(df_ref)
+    XB_reg_meas = np.array(XB_reg_meas)[df_ref.index] if n_bothbands else np.array([])
+    YB_reg_meas = np.array(YB_reg_meas)[df_ref.index] if n_bothbands else np.array([])
 
     # How far each band's measurement ended up from where the catalogue says the
     # star is, and from the other band. Kept in the file: when a calibration
     # goes wrong these two columns say so at a glance.
-    df_ref["Offset_B"] = np.hypot(df_ref["X_B"] - df_ref["X_pix"],
-                                  df_ref["Y_B"] - df_ref["Y_pix"])
+    #
+    # Both distances use B's position after registration onto V's grid, not
+    # its native pixel position - X_pix/Y_pix and X_V/Y_V are already in that
+    # grid, and comparing them against B's own, unregistered pixels would
+    # report an offset that is really just the two frames' own difference.
+    df_ref["Offset_B"] = np.hypot(XB_reg_meas - df_ref["X_pix"],
+                                  YB_reg_meas - df_ref["Y_pix"])
     df_ref["Offset_V"] = np.hypot(df_ref["X_V"] - df_ref["X_pix"],
                                   df_ref["Y_V"] - df_ref["Y_pix"])
-    df_ref["Separation_B_V"] = np.hypot(df_ref["X_B"] - df_ref["X_V"],
-                                        df_ref["Y_B"] - df_ref["Y_V"])
+    df_ref["Separation_B_V"] = np.hypot(XB_reg_meas - df_ref["X_V"],
+                                        YB_reg_meas - df_ref["Y_V"])
 
     # A star is only usable if both bands measured the same object. When one
     # band misses the star, the nearest blob is accepted instead and the two
@@ -708,6 +787,34 @@ def lookup_distance(name):
     return None
 
 
+def lookup_center_pixel(name, header):
+    """Where the galaxy actually sits in this frame, in pixels, or None.
+
+    The radial profile used to assume the galaxy sits exactly at the frame's
+    own geometric centre - true only if the telescope was pointed dead-on. On
+    a real pair of M101 frames the pointing was off by 72 px, about 1.8 kpc at
+    that distance: not huge next to the whole profile, but enough to bias the
+    inner rings, where 72 px is a large fraction of the radius, and to shift
+    the whole radius scale. The galaxy's own catalogued position, converted
+    through this frame's WCS, does not depend on how well the pointing landed.
+    """
+    try:
+        coord = SkyCoord.from_name(name)
+        w = WCS(header)
+        x, y = w.world_to_pixel(coord)
+        x, y = float(x), float(y)
+        nx, ny = header["NAXIS1"], header["NAXIS2"]
+        if 0 <= x < nx and 0 <= y < ny:
+            print(f"[lookup] {name}: centred at pixel ({x:.0f}, {y:.0f})", flush=True)
+            return x, y
+        print(f"[lookup] {name}'s catalogued position falls outside this frame "
+             f"- using the frame's own centre for the radial profile instead", flush=True)
+    except Exception as exc:
+        print(f"[lookup] galaxy centre unavailable ({exc}) - using the frame's "
+             f"own centre for the radial profile instead", flush=True)
+    return None, None
+
+
 def lookup_extinction(name):
     """Galactic reddening E(B-V) towards the galaxy, or None.
 
@@ -777,10 +884,19 @@ df_V = pd.DataFrame(results_V, columns=[
 
 _fwhm_hint = max(SEEING_MEASURED.get("B", SEEING_FALLBACK),
                  SEEING_MEASURED.get("V", SEEING_FALLBACK))
+
+# B is registered onto V's pixel grid once, here, before any matching -
+# against V's own detections and against the reference-star catalogue alike.
+print("Registering B onto V...", flush=True)
+_B_img = fits.getdata(fits_file_B, ext=0).astype(float)
+_V_img = fits.getdata(fits_file_V, ext=0).astype(float)
+_xB_reg, _yB_reg = register_B_onto_V(_B_img, _V_img, df_B["X"].values, df_B["Y"].values,
+                                     fits_file_B, fits_file_V)
+
 _match_tol = max(MATCH_TOLERANCE_MIN, MATCH_SCALE * _fwhm_hint)
 print(f"Matching B to V within {_match_tol:.1f} px"
       f" (stars are {_fwhm_hint:.1f} px wide)", flush=True)
-df_matched = match_sources(df_B, df_V, tol=_match_tol)
+df_matched = match_sources(df_B, df_V, tol=_match_tol, xB_reg=_xB_reg, yB_reg=_yB_reg)
 print(f"   {len(df_matched):,} sources measured in both bands", flush=True)
 
 csv_filename = os.path.join(_outdir, f"{obj_name}_photometry_results.csv")
@@ -788,7 +904,7 @@ df_matched.to_csv(csv_filename, index=False)
 print(f"Data saved to {csv_filename}")
 
 # ----- Run reference star extraction -----
-df_ref = extract_reference_stars(fits_file_V, df_B, df_V,
+df_ref = extract_reference_stars(fits_file_V, df_B, df_V, xB_reg=_xB_reg, yB_reg=_yB_reg,
                                  mag_limit=REF_MAG_LIMIT,
                                  catalog=REF_CATALOG,
                                  fwhm_hint=_fwhm_hint)
@@ -845,7 +961,7 @@ plt.imshow(data_V, cmap="gray", origin="lower", vmin=np.percentile(data_V, 5), v
 plt.colorbar(label="Counts")
 
 # overlay measured sources from df_V
-plt.scatter(df_V["X"], df_V["Y"], s=40, edgecolor="red", facecolor="none", label="Measured sources")
+plt.scatter(df_V["X"], df_V["Y"], s=40, edgecolor="green", facecolor="none", label="Measured sources")
 
 plt.title(f"{obj_name} - V band with detected sources")
 plt.xlabel("X [pixels]")
@@ -865,7 +981,7 @@ plt.figure(figsize=(10, 10))
 plt.imshow(data_B_disp, cmap="gray", origin="lower",
            vmin=np.percentile(data_B_disp, 5), vmax=np.percentile(data_B_disp, 99))
 plt.colorbar(label="Counts")
-plt.scatter(df_B["X"], df_B["Y"], s=40, edgecolor="red", facecolor="none",
+plt.scatter(df_B["X"], df_B["Y"], s=40, edgecolor="blue", facecolor="none",
             label="Measured sources")
 plt.title(f"{obj_name} - B band with detected sources")
 plt.xlabel("X [pixels]")
@@ -929,8 +1045,8 @@ plt.imshow(data_V, cmap="gray", origin="lower",
 plt.colorbar(label="Counts")
 
 # overlay cleaned detections from the filtered catalog
-plt.scatter(df_clean["X_B"], df_clean["Y_B"],
-            s=40, edgecolor="blue", facecolor="none", label="Cleaned sources (no stars)")
+plt.scatter(df_clean["X_V"], df_clean["Y_V"],
+            s=40, edgecolor="green", facecolor="none", label="Cleaned sources (no stars)")
 
 plt.title(f"{obj_name} - V band with detected sources (no stars)")
 plt.xlabel("X [pixels]")
@@ -969,7 +1085,7 @@ if "Mag_B" in df_clean.columns and "Mag_V" in df_clean.columns:
                vmin=np.percentile(data_V, 5), vmax=np.percentile(data_V, 99))
     plt.colorbar(label="Counts")
 
-    plt.scatter(df_color_filtered["X_B"], df_color_filtered["Y_B"],
+    plt.scatter(df_color_filtered["X_V"], df_color_filtered["Y_V"],
                 s=40, edgecolor="green", facecolor="none",
                 label=f"Sources in color range ({CMD_COLOR_MIN} ≤ B-V ≤ {CMD_COLOR_MAX})")
 
@@ -992,14 +1108,19 @@ else:
 
 # ----- Add radial distances in px and pc and create radial profiles -----
 if not df_color_filtered.empty:
-    # Galaxy center in pixels
-    x_center = data_V.shape[1] / 2.0
-    y_center = data_V.shape[0] / 2.0
+    # Galaxy center in pixels - the galaxy's own catalogued position when it
+    # can be looked up, the frame's geometric centre otherwise.
+    x_center, y_center = lookup_center_pixel(obj_name, hdr_V)
+    if x_center is None:
+        x_center = data_V.shape[1] / 2.0
+        y_center = data_V.shape[0] / 2.0
 
-    # Radial distance in pixels
+    # Radial distance in pixels. X_V/Y_V, not X_B/Y_B: x_center/y_center are in
+    # V's pixel grid (V's own WCS, or V's frame centre), and B's native pixels
+    # are not generally the same grid at all - see register_B_onto_V().
     df_color_filtered["Radial_Distance_px"] = np.sqrt(
-        (df_color_filtered["X_B"] - x_center)**2 +
-        (df_color_filtered["Y_B"] - y_center)**2
+        (df_color_filtered["X_V"] - x_center)**2 +
+        (df_color_filtered["Y_V"] - y_center)**2
     )
 
     # Pixel scale from WCS (deg/pixel -> rad/pixel)
