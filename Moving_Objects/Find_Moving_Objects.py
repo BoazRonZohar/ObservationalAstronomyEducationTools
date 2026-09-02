@@ -255,8 +255,7 @@ def short_axis(im, x, y, box=6):
     return 2.3548 * np.sqrt(a2), 2.3548 * np.sqrt(b2)
 
 
-def prepare(paths, psf_px, threshold, max_per_frame=400, min_usable=5,
-            verbose=True):
+def prepare(paths, psf_px, threshold, min_usable=5, verbose=True):
     """Align every frame, remove its local background, and find its sources."""
     import tempfile
     ref_w, c0 = None, None
@@ -329,11 +328,6 @@ def prepare(paths, psf_px, threshold, max_per_frame=400, min_usable=5,
                     continue                     # inside a saturated star
                 det.append((k, float(q["xcentroid"]), float(q["ycentroid"]),
                             float(q["flux"])))
-        if max_per_frame:
-            mine = [d for d in det if d[0] == k]
-            if len(mine) > max_per_frame:
-                mine.sort(key=lambda d: -d[3])
-                det = [d for d in det if d[0] != k] + mine[:max_per_frame]
         if store is None:
             store = np.memmap(scratch, dtype=np.float32, mode="w+",
                               shape=(len(paths),) + clean.shape)
@@ -347,6 +341,39 @@ def prepare(paths, psf_px, threshold, max_per_frame=400, min_usable=5,
         raise SystemExit("Too few usable frames.")
     frames = store[:len(mjds)]
     return (frames, np.array(mjds), np.array(det), ref_w, scratch)
+
+
+def cap_per_frame(det, budget, n_frames):
+    """Keep only the `budget` brightest detections of each frame.
+
+    The ORDER of this against drop_static matters more than the number does.
+    It used to run inside `prepare`, on everything the finder produced, which
+    spent the whole budget on the brightest things in the frame - and in a
+    crowded field the brightest things are all static stars, deleted by the
+    very next step. The budget was spent on objects guaranteed to be thrown
+    away, and a faint mover never got near the cut.
+
+    Measured on one degree of sky holding 5,139 sources per frame: capping
+    first left drop_static able to recognise 359 stars, because 400 detections
+    per frame is not enough repetition to learn a field. Capping afterwards let
+    it recognise 6,092. What reaches the search stopped being marginal stars
+    and started being things that are not where the sky keeps putting them.
+
+    It is OFF by default, and that is deliberate. Once the static stars are
+    gone, what remains is faint by nature - and so is an asteroid. Keeping the
+    brightest of the leftovers throws away the faint end, which is the end the
+    object being looked for lives at: on that same field it dropped 196 of the
+    596 candidates in a frame. A budget here only bounds the running time, and
+    it buys that by discarding exactly what the search exists to find."""
+    if not budget or len(det) == 0:
+        return det
+    out = []
+    for k in range(n_frames):
+        m = det[det[:, 0] == k]
+        if len(m) > budget:
+            m = m[np.argsort(-m[:, 3])][:budget]
+        out.append(m)
+    return np.vstack(out) if out else det
 
 
 def drop_static(det, n_frames, tol=2.5, min_frames=None):
@@ -398,7 +425,7 @@ def drop_static(det, n_frames, tol=2.5, min_frames=None):
 # --------------------------------------------------------------------------
 
 def triples(det, hours, n_frames, psf_px, max_rate_px_h, mid_tol=2.0,
-            min_move_px=3.0, min_middles=2, verbose=True):
+            min_move_px=3.0, min_middles=2, min_arc_frac=0.25, verbose=True):
     """Velocities supported by three or more epochs moving at ONE rate.
 
     Two points define a line and prove nothing. A third has to land where the
@@ -440,7 +467,22 @@ def triples(det, hours, n_frames, psf_px, max_rate_px_h, mid_tol=2.0,
         for kc, tree_c in by_frame.items():
             tc = hours[kc]
             dt = tc - ta
-            if dt <= 0.45 * span_all:
+            # How much of the run the two anchor points must span. This was a
+            # flat 0.45, and that number quietly decided which objects could
+            # be found at all: an asteroid that enters the field, is seen for
+            # a third of the night and leaves has no pair of its own
+            # detections separated by 45% of the run, so no line could ever be
+            # drawn through it and it was invisible to the method - not faint,
+            # not rejected, never considered.
+            #
+            # Halving the stretch used to be the way round it. Cutting the run
+            # in half halves span_all too, so a short arc suddenly cleared the
+            # bar. That was never a search strategy, it was a workaround for
+            # this line, and when the quick look stopped halving the workaround
+            # went with it. The right answer is to lower the bar rather than
+            # shorten the run, because shortening the run costs the arc length
+            # that everything else here is measured against.
+            if dt <= min_arc_frac * span_all:
                 continue
             pts = by_frame_pts[kc]
             near = tree_c.query_ball_point((ax, ay), max_rate_px_h * dt)
@@ -723,8 +765,7 @@ def quick_look(paths, idx, args, stem=None, px_scale=1.0, verbose_depth=True):
     # hung run - which is exactly the question this tool kept being asked.
     print("")
     frames, mjds, det, ref_w, scratch = prepare(
-        sub, args.psf_px, args.threshold, max_per_frame=args.max_per_frame,
-        min_usable=3, verbose=True)
+        sub, args.psf_px, args.threshold, min_usable=3, verbose=True)
     try:
         # Everything read is searched. There used to be a cull here: the
         # frames were taken in adjacent PAIRS and only the deeper of each was
@@ -745,7 +786,8 @@ def quick_look(paths, idx, args, stem=None, px_scale=1.0, verbose_depth=True):
                                psf_px=args.psf_px, min_snr=args.min_snr,
                                min_significance=args.min_significance,
                                max_wander=args.max_wander, px_scale=px_scale,
-                               max_rate_arcsec_h=args.max_rate, verbose=False)
+                               max_rate_arcsec_h=args.max_rate, verbose=False,
+                               max_per_frame=args.max_per_frame)
         hrs = hours_of(mjds)
         # The pictures are drawn HERE, while the frames still exist. A quick
         # look used to leave nothing behind but a line on the screen, which is
@@ -866,10 +908,9 @@ def pixel_scale(header):
 
 
 def search(paths, psf_px=3.2, threshold=4.0, min_snr=8.0,
-           max_per_frame=400, min_significance=5.0, max_wander=5.0,
+           max_per_frame=0, min_significance=5.0, max_wander=5.0,
            max_rate_arcsec_h=400.0, verbose=True):
     frames, mjds, det, ref_w, scratch = prepare(paths, psf_px, threshold,
-                                                max_per_frame=max_per_frame,
                                                 verbose=verbose)
     try:
         h0 = fits.getheader(paths[0])
@@ -880,7 +921,8 @@ def search(paths, psf_px=3.2, threshold=4.0, min_snr=8.0,
         px = 1.0
     objs = search_prepared(frames, mjds, det, psf_px, min_snr,
                            min_significance, max_wander, px,
-                           max_rate_arcsec_h, verbose)
+                           max_rate_arcsec_h, verbose,
+                           max_per_frame=max_per_frame)
     return objs, frames, hours_of(mjds), mjds[np.argsort(mjds)], ref_w, scratch
 
 
@@ -891,7 +933,8 @@ def hours_of(mjds):
 
 def search_prepared(frames, mjds, det, psf_px=3.2, min_snr=8.0,
                     min_significance=5.0, max_wander=5.0, px_scale=1.0,
-                    max_rate_arcsec_h=400.0, verbose=True):
+                    max_rate_arcsec_h=400.0, verbose=True,
+                    max_per_frame=0):
     """Everything after the frames have been read and their sources found."""
     order = np.argsort(mjds)
     frames, mjds = frames[order], mjds[order]
@@ -908,6 +951,13 @@ def search_prepared(frames, mjds, det, psf_px=3.2, min_snr=8.0,
         print(f"    {len(stat)} static stars, {len(left)} detections left over"
               + (f", positions repeat to {precision:.2f} px"
                  if np.isfinite(precision) else ""))
+    # The budget is spent HERE, on what is left after the sky has been taken
+    # out, and not on the frame as it arrived.
+    n_before = len(left)
+    left = cap_per_frame(left, max_per_frame, len(frames))
+    if verbose and len(left) != n_before:
+        print(f"    {len(left)} of those kept, at most {max_per_frame} per "
+              f"frame - {n_before - len(left)} of the FAINTEST discarded")
 
     span = hours[-1] - hours[0]
     # The ceiling is a RATE, not a distance. It used to be sixty pixels of
@@ -1068,8 +1118,12 @@ def main():
                          "wander off its line")
     ap.add_argument("--min_significance", type=float, default=5.0,
                     help="how many times its own scatter a track must travel")
-    ap.add_argument("--max_per_frame", type=int, default=400,
-                    help="keep only this many of the brightest per frame")
+    ap.add_argument("--max_per_frame", type=int, default=0,
+                    help="0 searches every candidate, which is the point. A "
+                         "number here caps how many per frame reach the "
+                         "search and keeps the BRIGHTEST of them - it bounds "
+                         "the running time by throwing away the faint end, "
+                         "which is where an asteroid is")
     ap.add_argument("--min_snr", type=float, default=8.0,
                     help="how strong the stacked object must be")
     args = ap.parse_args()
