@@ -2972,9 +2972,12 @@ def choose_radii(frames, plane, stars, cfg, n_sample=9, verbose=True):
     # does nothing to the comparison stars, so it scores well while quietly
     # diluting the target. The ceiling is the one thing the scan cannot see.
     if cfg.get("pair_sep_px"):
+        # the measured width, for the same reason the detector needs it - the
+        # header's value is wrong by a factor here and would bound the scan
+        # against a star wider than the one on the chip
         r_max, _kept = pair_aperture_limit(
-            cfg["pair_sep_px"], cfg.get("pair_ratio", 0.2), fwhm,
-            cfg.get("pair_contam", 0.01))
+            cfg["pair_sep_px"], cfg.get("pair_ratio", 0.2),
+            cfg.get("pair_fwhm") or fwhm, cfg.get("pair_contam", 0.01))
         AP = [k for k in AP if k * fwhm <= r_max] or [min(AP)]
 
     idx = np.unique(np.linspace(0, len(frames) - 1, min(n_sample, len(frames))).astype(int))
@@ -4132,7 +4135,7 @@ def main():
         # so it is looked for once and the answer serves all three. The three
         # planes are summed for it: on one plane this pair is missed and on
         # the sum it is found (see detect_close_pair).
-        pair, deep_img = None, None
+        pair, deep_img, pair_fwhm = None, None, None
 
         for plane, cname in CHANNELS:
             if cname not in wanted:
@@ -4153,8 +4156,23 @@ def main():
                         if deep_img is None:
                             deep_img = fits.getdata(
                                 keep[ref_idx]["path"]).astype(float).sum(axis=0)
+                        # The width has to be MEASURED, and measured on the
+                        # comparison stars. Not the header: on these frames it
+                        # reports 5.75 px where the stars are 3.41 px wide, and
+                        # every length in the detector is scaled by it - the
+                        # box it fits in, the width it starts the fit at, the
+                        # smallest separation it will believe - so at the
+                        # header's value the pair is missed entirely. Not the
+                        # target either: a blended target is wide by
+                        # construction, which is the very thing being tested.
+                        ws = [measure_fwhm(deep_img, float(cx), float(cy))
+                              for cx, cy in zip(stars.x[1:], stars.y[1:])]
+                        ws = [w for w in ws
+                              if w is not None and np.isfinite(w) and 1.5 < w < 30]
+                        pair_fwhm = float(np.median(ws)) if ws else fwhm
                         pair = detect_close_pair(
-                            deep_img, float(stars.x[0]), float(stars.y[0]), fwhm)
+                            deep_img, float(stars.x[0]), float(stars.y[0]),
+                            pair_fwhm)
             except Exception as e:
                 print(f"    star selection failed: {e}")
                 continue
@@ -4178,7 +4196,7 @@ def main():
                 sep_px, dmag = pair
                 pair_sep, pair_ratio = sep_px, 10 ** (-0.4 * dmag)
                 r_med, kept_med = pair_aperture_limit(
-                    sep_px, pair_ratio, fwhm, args.pair_contam)
+                    sep_px, pair_ratio, pair_fwhm or fwhm, args.pair_contam)
                 note_src = ((note_src + "; ") if note_src else "") + (
                     f"companion {sep_px:.2f} px away, {dmag:.2f} mag fainter, "
                     f"unresolved by the star finder - aperture follows the "
@@ -4187,7 +4205,8 @@ def main():
                     f"{kept_med * 100:.0f}% of the target's light)")
             pair_cfg = dict(pair_sep_px=pair_sep, pair_ratio=pair_ratio,
                             pair_contam=args.pair_contam,
-                            pair_min_flux=args.pair_min_flux)
+                            pair_min_flux=args.pair_min_flux,
+                            pair_fwhm=pair_fwhm)
             cfg0 = dict(median_fwhm=fwhm, k_aperture=args.k_aperture,
                         k_ann_in=args.k_ann_in, k_ann_out=args.k_ann_out,
                         centroid_box=8, **pair_cfg)
