@@ -714,9 +714,9 @@ def quick_look(paths, idx, args, stem=None, px_scale=1.0, verbose_depth=True):
     are enough for an object that is plainly there in all of them, and this one
     is not.
 
-    So a handful is read instead of three, and the full method runs on them.
-    Seven frames out of a hundred and sixty is still a twentieth of the work,
-    and it asks a fair question rather than a lucky one."""
+    So a sample is read instead of three, and the full method runs on ALL of
+    it. Fourteen frames out of a hundred and sixty is still a ninth of the
+    work, and it asks a fair question rather than a lucky one."""
     sub = [paths[i] for i in idx]
     # Progress is shown here too. Reading fourteen frames off an external disk
     # is a minute or two of silence, and silence is indistinguishable from a
@@ -726,49 +726,34 @@ def quick_look(paths, idx, args, stem=None, px_scale=1.0, verbose_depth=True):
         sub, args.psf_px, args.threshold, max_per_frame=args.max_per_frame,
         min_usable=3, verbose=True)
     try:
-        # How deep each frame went, from how many sources it yielded. Spread
-        # alone is a blind choice: it picks whichever frame falls on the mark,
-        # cloud or not, and on the one night whose answer is known the blind
-        # picks landed on frames where the asteroid was not detected at all.
-        # The sample is read in PAIRS that are adjacent in time and the deeper
-        # of each pair is kept - so the seven that go forward are both spread
-        # across the night and the best of what was looked at.
-        counts = np.array([int((det[:, 0] == k).sum()) for k in range(len(mjds))])
-        if len(mjds) <= args.quick_frames:
-            # Nothing to choose between: throwing away half of a short stretch
-            # leaves too little to define a track at all, which is how a look
-            # at the first seven frames of Encke came back empty when all seven
-            # together hold the asteroid.
-            keep = list(range(len(mjds)))
-        else:
-            keep = []
-            for i in range(0, len(mjds) - 1, 2):
-                keep.append(i if counts[i] >= counts[i + 1] else i + 1)
-            if len(mjds) % 2:
-                keep.append(len(mjds) - 1)
-        keep = sorted(set(keep))
+        # Everything read is searched. There used to be a cull here: the
+        # frames were taken in adjacent PAIRS and only the deeper of each was
+        # kept, so fourteen frames off the disk bought a search over seven.
+        # That was a fair trade when one pass was all there was and the only
+        # question was which seven to spend it on. It is the wrong trade now
+        # that the next pass doubles the sampling anyway - half of what has
+        # already been paid for is thrown away and nothing is bought with it.
+        # It also cost a real detection: on a thirteen frame night the cull
+        # left seven, too few of them inside the first third where that
+        # asteroid is visible to make a triple. Halving the stretch looked
+        # like the fix, but all halving really did was switch the cull off.
+        counts = [int((det[:, 0] == k).sum()) for k in range(len(mjds))]
         if verbose_depth:
-            print(f" [{len(mjds)} read, {len(keep)} kept: "
-                  f"{', '.join(str(counts[k]) for k in keep)} sources]",
-                  end="")
-        remap = -np.ones(len(mjds), int)
-        remap[keep] = np.arange(len(keep))
-        m = np.isin(det[:, 0].astype(int), keep)
-        sel = det[m].copy()
-        sel[:, 0] = remap[sel[:, 0].astype(int)]
-        objs = search_prepared(frames[keep], mjds[keep], sel,
+            print(f" [{len(mjds)} frames searched: "
+                  f"{min(counts)}-{max(counts)} sources each]", end="")
+        objs = search_prepared(frames, mjds, det,
                                psf_px=args.psf_px, min_snr=args.min_snr,
                                min_significance=args.min_significance,
                                max_wander=args.max_wander, px_scale=px_scale,
                                max_rate_arcsec_h=args.max_rate, verbose=False)
-        hrs = hours_of(mjds[keep])
+        hrs = hours_of(mjds)
         # The pictures are drawn HERE, while the frames still exist. A quick
         # look used to leave nothing behind but a line on the screen, which is
         # the one thing that cannot be checked afterwards.
         if stem and objs:
-            draw_objects(objs, frames[keep], hrs, px_scale, stem,
+            draw_objects(objs, frames, hrs, px_scale, stem,
                          tag=" (quick look)")
-        return objs, hrs, np.sort(mjds[keep]), ref_w
+        return objs, hrs, np.sort(mjds), ref_w
     finally:
         del frames
         try:
@@ -778,18 +763,30 @@ def quick_look(paths, idx, args, stem=None, px_scale=1.0, verbose_depth=True):
 
 
 def quick_session(paths, args, px_scale, out_stem):
-    """Look at a few frames, say what is there, and let the observer choose.
+    """Look at a sample, say what is there, and let the observer ask for more.
 
-    A stretch that shows nothing may still hold an object that was only in the
-    field for part of it, so the stretch is halved and looked at again - as
-    many times as the observer wants, and no more."""
-    lo, hi = 0, len(paths) - 1
+    Each pass DOUBLES the sampling over the WHOLE run - fourteen frames, then
+    twenty-seven, then fifty-three - until the sample is the run itself.
+
+    It used to halve the stretch and look at one half instead. That buys a
+    denser look at a piece of the night by throwing the rest of the night
+    away, and what a track is measured against is exactly how far it moved:
+    significance is travel over scatter, and travel grows with the span. Two
+    passes cost the same reading either way - fourteen frames across half the
+    run, or twenty-seven across all of it, both reach the same spacing - but
+    only the second keeps the whole arc. A hundred and twenty frames spanning
+    twenty-three minutes once found nothing at all, and that is the failure
+    halving walks towards, one press at a time.
+
+    The frames added by each pass fall midway between the ones already
+    sampled, so every pass contains the pass before it whole."""
+    n = min(args.quick_frames, len(paths))
     while True:
-        n = min(2 * args.quick_frames, hi - lo + 1)
-        idx = sorted(set(int(round(v)) for v in np.linspace(lo, hi, n)))
-        print(f"\n  reading {len(idx)} frames of {len(paths)} "
-              f"(numbers {idx[0] + 1} to {idx[-1] + 1}) ...", end="", flush=True)
-        stem = f"{out_stem}_quick_{lo + 1}-{hi + 1}"
+        idx = sorted(set(int(round(v))
+                         for v in np.linspace(0, len(paths) - 1, n)))
+        print(f"\n  reading {len(idx)} frames of {len(paths)}, spread over "
+              f"the whole run ...", end="", flush=True)
+        stem = f"{out_stem}_quick_{len(idx)}frames"
         try:
             objs, hours, mjds, ref_w = quick_look(paths, idx, args, stem=stem,
                                                   px_scale=px_scale)
@@ -813,9 +810,9 @@ def quick_session(paths, args, px_scale, out_stem):
                 for _ln in names[-1]:
                     print(f"       {_ln}")
             with open(stem + "_tracks.txt", "w", encoding="utf-8") as fh:
-                fh.write(f"quick look, frames {lo + 1} to {hi + 1} of "
-                         f"{len(paths)}" + NL +
-                         f"{len(idx)} read, {len(objs)} object(s), "
+                fh.write(f"quick look, {len(idx)} frames of {len(paths)} "
+                         f"spread over the whole run" + NL +
+                         f"{len(objs)} object(s), "
                          f"first MJD {mjds[0]:.6f}" + NL + NL)
                 for k, o in enumerate(objs, 1):
                     rate = float(np.hypot(o["vx"], o["vy"]) * px_scale)
@@ -836,25 +833,23 @@ def quick_session(paths, args, px_scale, out_stem):
                   "look to measure them properly)")
         else:
             print("  NOT FOUND in this sample")
-        # Halving is the point, so it is allowed until a half is genuinely too
-        # small to search. Requiring twice the sample size refused to halve a
-        # thirteen frame night - and halving is exactly what that night needed,
-        # because its asteroid is only detectable in the first third and no
-        # pair inside that third spans enough of the WHOLE run to count.
-        if hi - lo < 6:
-            print("  the stretch is too short to halve again")
+        # The ladder ends where the sample IS the run. There is no denser
+        # look left to offer, and by then the quick look has quietly become
+        # the full search.
+        if len(idx) >= len(paths):
+            print("  that was every frame in the run - nothing left to add")
             return
+        nxt = min(2 * n - 1, len(paths))
         try:
-            ans = input("  look at the first half, the second half, or stop? "
-                        "[f/s/n]: ").strip().lower()
+            ans = input(f"  look again with {nxt} frames instead of "
+                        f"{len(idx)}, or stop? [y/n]: ").strip().lower()
         except EOFError:
             return
-        if ans.startswith("f"):
-            hi = (lo + hi) // 2
-        elif ans.startswith("s"):
-            lo = (lo + hi) // 2
-        else:
+        if not ans.startswith("y"):
             return
+        # 2n-1, not 2n: the new frames fall exactly midway between the ones
+        # already read, so the previous sample survives whole inside the next.
+        n = nxt
 
 
 # --------------------------------------------------------------------------
@@ -1050,8 +1045,10 @@ def main():
     ap.add_argument("--output_dir", default=None)
     ap.add_argument("--quick", action="store_true",
                     help="look at a few frames first, and ask before doing more")
-    ap.add_argument("--quick_frames", type=int, default=7,
-                    help="how many frames the quick look reads")
+    ap.add_argument("--quick_frames", type=int, default=14,
+                    help="how many frames the FIRST quick pass searches; each "
+                         "pass after it doubles, on request, up to the whole "
+                         "run")
     ap.add_argument("--psf_px", type=float, default=3.2)
     ap.add_argument("--threshold", type=float, default=4.0)
     ap.add_argument("--no_catalogue", action="store_true",
@@ -1120,10 +1117,10 @@ def main():
         # hour of reading was unreachable in practice. Everything else this
         # family of tools needs is asked for; so is this.
         quick = args.quick
-        if not quick and len(ps) > 2 * args.quick_frames:
+        if not quick and len(ps) > args.quick_frames:
             while True:
                 try:
-                    ans = input(f"  A quick look first, on {2 * args.quick_frames} "
+                    ans = input(f"  A quick look first, on {args.quick_frames} "
                                 f"frames instead of {len(ps)}? [Y/n]: ").strip().lower()
                 except EOFError:
                     ans = ""
