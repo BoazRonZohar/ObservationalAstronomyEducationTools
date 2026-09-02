@@ -183,6 +183,28 @@
         <input id="maxsig" type="number" step="1" value="10">
       </div>
       <div>
+        <label>Maximum magnitude</label>
+        <input id="maxmag" type="number" step="0.1" value="15">
+      </div>
+      <div>
+        <label>Minimum transit depth (mmag)</label>
+        <input id="mindepth" type="number" step="1" value="5">
+      </div>
+      <div>
+        <label>Maximum transit duration (h)</label>
+        <input id="maxdur" type="number" step="0.5" value="6">
+      </div>
+      <div>
+        <label>Sort by</label>
+        <select id="sortSel">
+          <option value="time" selected>time, soonest first</option>
+          <option value="depth">transit depth, deepest first</option>
+          <option value="alt">altitude above the horizon</option>
+          <option value="sigma">timing uncertainty</option>
+          <option value="mag">star brightness</option>
+        </select>
+      </div>
+      <div>
         <label>Darkness required</label>
         <select id="twilight">
           <option value="-6">civil twilight (-6°)</option>
@@ -529,6 +551,9 @@ function runCalculation(){
   const dateStr = document.getElementById('obsdate').value;
   const minAlt = parseFloat(document.getElementById('minalt').value);
   const maxSig = parseFloat(document.getElementById('maxsig').value);
+  const maxMag   = parseFloat(document.getElementById('maxmag').value);
+  const minDepth = parseFloat(document.getElementById('mindepth').value);   // millimagnitudes
+  const maxDur   = parseFloat(document.getElementById('maxdur').value);
   const twilightAlt = parseFloat(document.getElementById('twilight').value);
   const status = document.getElementById('status');
 
@@ -557,6 +582,12 @@ function runCalculation(){
   const bufferDays = 0.4; // extra margin around night window to catch grazing transits
 
   CATALOG.forEach(p => {
+    // a target too faint, too shallow for the telescope's noise floor, or whose transit runs
+    // longer than one sitting is not worth listing; a planet with no published depth is kept,
+    // since an unknown depth is not the same as a shallow one
+    if(isFinite(maxMag) && p.vmag > maxMag) return;
+    if(isFinite(maxDur) && p.dur > maxDur) return;
+    if(isFinite(minDepth) && p.depth !== null && depthMmag(p.depth) < minDepth) return;
     const nMin = Math.floor((nightStart - bufferDays - p.t0)/p.period) - 1;
     const nMax = Math.ceil((nightEnd + bufferDays - p.t0)/p.period) + 1;
     for(let n=nMin; n<=nMax; n++){
@@ -582,7 +613,14 @@ function runCalculation(){
     }
   });
 
-  results.sort((a,b)=>a.midJD-b.midJD);
+  const cmp = {
+    time:  (a,b)=> a.midJD - b.midJD,
+    depth: (a,b)=> (b.planet.depth||0) - (a.planet.depth||0) || a.midJD - b.midJD,
+    alt:   (a,b)=> b.altMin - a.altMin || a.midJD - b.midJD,
+    sigma: (a,b)=> (a.sig===null?1e9:a.sig) - (b.sig===null?1e9:b.sig) || a.midJD - b.midJD,
+    mag:   (a,b)=> a.planet.vmag - b.planet.vmag || a.midJD - b.midJD,
+  }[document.getElementById('sortSel').value] || ((a,b)=>a.midJD-b.midJD);
+  results.sort(cmp);
 
   const tbody = document.getElementById('resultsBody');
   const tablePanel = document.getElementById('tablePanel');
