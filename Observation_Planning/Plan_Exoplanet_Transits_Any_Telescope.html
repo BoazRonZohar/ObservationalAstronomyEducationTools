@@ -174,6 +174,10 @@
         <input id="minalt" type="number" step="1" value="40">
       </div>
       <div>
+        <label>Maximum timing uncertainty (min)</label>
+        <input id="maxsig" type="number" step="1" value="10">
+      </div>
+      <div>
         <label>Darkness required</label>
         <select id="twilight">
           <option value="-6">civil twilight (-6°)</option>
@@ -215,6 +219,7 @@
             <th>Mid transit<br><span style="font-weight:400;">(local / UTC)</span></th>
             <th>Transit end<br><span style="font-weight:400;">(local / UTC)</span></th>
             <th>Altitude at mid</th>
+            <th>Timing uncertainty</th>
           </tr>
         </thead>
         <tbody id="resultsBody"></tbody>
@@ -234,113 +239,113 @@
 // period_d: orbital period (days). t0_bjd: reference mid-transit epoch (BJD ~ JD, TDB).
 // dur_h: transit duration (hours, total, first to last contact).
 const CATALOG = [
-  {name:"HD 219134b", host:"HD 219134", slug:"HD_219134b", ra:348.3207, dec:57.1684, vmag:5.57, period:3.09292600, t0:2457126.699130, dur:0.9456},
-  {name:"HD 136352b", host:"HD 136352", slug:"HD_136352b", ra:230.4506, dec:-48.3176, vmag:5.65, period:11.57779400, t0:2458944.370640, dur:3.9648},
-  {name:"pi Men c", host:"pi Men", slug:"pi_Men_c", ra:84.2912, dec:-80.4691, vmag:5.67, period:6.26782500, t0:2458325.504200, dur:2.9688},
-  {name:"55 Cnc e", host:"55 Cnc", slug:"55_Cnc_e", ra:133.1492, dec:28.3308, vmag:5.95, period:0.73654604, t0:2457178.817800, dur:1.5439},
-  {name:"HR 858b", host:"HR 858", slug:"HR_858b", ra:42.9844, dec:-30.8145, vmag:6.38, period:3.58528700, t0:2458409.190000, dur:2.7048},
-  {name:"HD 063433b", host:"HD 063433", slug:"HD_063433b", ra:117.4794, dec:27.3632, vmag:6.91, period:7.10793790, t0:2458916.452620, dur:2.9280},
-  {name:"KELT-09", host:"KELT-09", slug:"KELT-09", ra:307.8598, dec:39.9388, vmag:7.56, period:1.48111896, t0:2457095.685686, dur:3.9725},
-  {name:"KELT-20", host:"KELT-20", slug:"KELT-20", ra:294.6614, dec:31.2192, vmag:7.59, period:3.47410130, t0:2459424.297687, dur:3.0953},
-  {name:"HD 209458", host:"HD 209458", slug:"HD_209458", ra:330.7950, dec:18.8844, vmag:7.65, period:3.52474859, t0:2455216.405640, dur:3.0480},
-  {name:"HD 189733", host:"HD 189733", slug:"HD_189733", ra:300.1821, dec:22.7109, vmag:7.68, period:2.21857519, t0:2459446.498519, dur:1.8070},
-  {name:"HD 097658", host:"HD 097658", slug:"HD_097658", ra:168.6382, dec:25.7104, vmag:7.71, period:9.48930770, t0:2456361.805800, dur:2.8488},
-  {name:"KELT-11", host:"KELT-11", slug:"KELT-11", ra:161.7073, dec:-9.3990, vmag:8.03, period:4.73620495, t0:2458260.168608, dur:7.1376},
-  {name:"HD 118203", host:"HD 118203", slug:"HD_118203", ra:203.5100, dec:53.7282, vmag:8.14, period:6.13497790, t0:2458712.661780, dur:5.6424},
-  {name:"HD 149026", host:"HD 149026", slug:"HD_149026", ra:247.6234, dec:38.3473, vmag:8.16, period:2.87588874, t0:2454456.787600, dur:3.2400},
-  {name:"HD 017156", host:"HD 017156", slug:"HD_017156", ra:42.4354, dec:71.7532, vmag:8.17, period:21.21642940, t0:2458809.073070, dur:3.1505},
-  {name:"DS Tuc", host:"DS Tu", slug:"DS_Tuc", ra:354.9145, dec:-69.1958, vmag:8.23, period:8.13826800, t0:2458332.309260, dur:3.1200},
-  {name:"WASP-33", host:"WASP-33", slug:"WASP-33", ra:36.7128, dec:37.5505, vmag:8.30, period:1.21986988, t0:2454163.223711, dur:2.5824},
-  {name:"KELT-24", host:"KELT-24", slug:"KELT-24", ra:161.9098, dec:71.6559, vmag:8.39, period:5.55149296, t0:2459173.347426, dur:4.3032},
-  {name:"HD 110067b", host:"HD 110067", slug:"HD_110067b", ra:189.8396, dec:20.0278, vmag:8.42, period:9.11367800, t0:2459640.157970, dur:3.0960},
-  {name:"KELT-07", host:"KELT-07", slug:"KELT-07", ra:78.2955, dec:33.3182, vmag:8.54, period:2.73476550, t0:2458835.661885, dur:3.4800},
-  {name:"AU Mic b", host:"AU Mic", slug:"AU_Mic_b", ra:311.2897, dec:-31.3409, vmag:8.63, period:8.46314280, t0:2460149.955000, dur:3.4800},
-  {name:"AU Mic c", host:"AU Mic", slug:"AU_Mic_c", ra:311.2897, dec:-31.3409, vmag:8.63, period:18.85882700, t0:2460133.871800, dur:3.7200},
-  {name:"KELT-02", host:"KELT-02", slug:"KELT-02", ra:92.6640, dec:30.9571, vmag:8.70, period:4.11377580, t0:2455974.603380, dur:5.1744},
-  {name:"HAT-P-02", host:"HAT-P-02", slug:"HAT-P-02", ra:245.1515, dec:41.0481, vmag:8.71, period:5.63346650, t0:2458956.237920, dur:4.2888},
-  {name:"HD 106315b", host:"HD 106315", slug:"HD_106315b", ra:183.4725, dec:-0.3935, vmag:8.95, period:9.55211000, t0:2458427.132000, dur:3.8400},
-  {name:"HD 191939b", host:"HD 191939", slug:"HD_191939b", ra:302.0256, dec:66.8503, vmag:8.97, period:8.88032560, t0:2459443.542360, dur:2.9400},
-  {name:"HD 080606", host:"HD 080606", slug:"HD_080606", ra:140.6565, dec:50.6037, vmag:9.06, period:111.43676500, t0:2458888.074700, dur:11.9760},
-  {name:"HD 108236b", host:"HD 108236", slug:"HD_108236b", ra:186.5745, dec:-51.3628, vmag:9.24, period:3.79587850, t0:2458572.110170, dur:2.2992},
-  {name:"WASP-18", host:"WASP-18", slug:"WASP-18", ra:24.3544, dec:-45.6778, vmag:9.29, period:0.94145223, t0:2458374.239800, dur:2.1444},
-  {name:"WASP-38", host:"WASP-38", slug:"WASP-38", ra:290.7639, dec:10.1407, vmag:9.42, period:6.87186098, t0:2456012.830590, dur:4.3344},
-  {name:"GJ 0341", host:"GJ 0341", slug:"GJ_0341", ra:140.4067, dec:-60.2819, vmag:9.47, period:7.57686000, t0:2459301.771000, dur:2.2296},
-  {name:"HAT-P-11", host:"HAT-P-11", slug:"HAT-P-11", ra:297.7094, dec:48.0809, vmag:9.47, period:4.88780244, t0:2454957.813207, dur:2.3520},
-  {name:"HAT-P-70", host:"HAT-P-70", slug:"HAT-P-70", ra:74.5523, dec:9.9980, vmag:9.47, period:2.74432452, t0:2458439.575190, dur:3.4800},
-  {name:"WASP-76", host:"WASP-76", slug:"WASP-76", ra:26.6329, dec:2.7029, vmag:9.51, period:1.80988158, t0:2456107.855877, dur:3.6984},
-  {name:"HAT-P-60", host:"HAT-P-60", slug:"HAT-P-60", ra:28.2824, dec:52.0539, vmag:9.71, period:4.79478130, t0:2458360.940290, dur:5.0352},
-  {name:"HAT-P-22", host:"HAT-P-22", slug:"HAT-P-22", ra:155.6813, dec:50.1283, vmag:9.73, period:3.21223265, t0:2454891.673990, dur:2.8704},
-  {name:"HAT-P-69", host:"HAT-P-69", slug:"HAT-P-69", ra:130.5056, dec:3.7106, vmag:9.77, period:4.78694910, t0:2458495.788610, dur:5.1264},
-  {name:"KELT-03", host:"KELT-03", slug:"KELT-03", ra:148.6433, dec:40.3881, vmag:9.82, period:2.70339023, t0:2458872.854370, dur:2.7406},
-  {name:"GJ 0367", host:"GJ 0367", slug:"GJ_0367", ra:146.1243, dec:-45.7765, vmag:9.98, period:0.32192260, t0:2458543.814140, dur:0.6288},
-  {name:"KELT-04", host:"KELT-04", slug:"KELT-04", ra:157.0625, dec:25.5732, vmag:9.98, period:2.98958200, t0:2459610.390410, dur:3.4632},
-  {name:"HAT-P-14", host:"HAT-P-14", slug:"HAT-P-14", ra:260.1161, dec:38.2422, vmag:10.00, period:4.62765940, t0:2459729.706791, dur:2.1768},
-  {name:"HAT-P-67", host:"HAT-P-67", slug:"HAT-P-67", ra:256.6107, dec:44.7770, vmag:10.11, period:4.81010690, t0:2459010.991740, dur:6.9888},
-  {name:"HAT-P-49", host:"HAT-P-49", slug:"HAT-P-49", ra:305.4414, dec:26.6927, vmag:10.21, period:2.69155750, t0:2459422.241820, dur:4.1088},
-  {name:"HAT-P-08", host:"HAT-P-08", slug:"HAT-P-08", ra:343.0411, dec:35.4471, vmag:10.30, period:3.07634580, t0:2454437.674200, dur:3.8088},
-  {name:"WASP-77Ab", host:"WASP-77A", slug:"WASP-77Ab", ra:47.1880, dec:-9.5724, vmag:10.33, period:1.36002597, t0:2456537.548200, dur:2.0306},
-  {name:"HAT-P-30", host:"HAT-P-30", slug:"HAT-P-30", ra:123.9499, dec:5.8367, vmag:10.36, period:2.81060070, t0:2457775.212778, dur:2.2570},
-  {name:"HAT-P-01", host:"HAT-P-01", slug:"HAT-P-01", ra:344.4451, dec:38.6749, vmag:10.40, period:4.46530031, t0:2454363.947780, dur:2.8500},
-  {name:"KELT-06", host:"KELT-06", slug:"KELT-06", ra:195.9819, dec:30.6401, vmag:10.42, period:7.84560670, t0:2458936.846300, dur:5.8320},
-  {name:"WASP-121", host:"WASP-121", slug:"WASP-121", ra:107.6003, dec:-39.0974, vmag:10.44, period:1.27492515, t0:2458119.783981, dur:2.8406},
-  {name:"HAT-P-07", host:"HAT-P-07", slug:"HAT-P-07", ra:292.2473, dec:47.9695, vmag:10.46, period:2.20473539, t0:2454954.358557, dur:3.9432},
-  {name:"HAT-P-57", host:"HAT-P-57", slug:"HAT-P-57", ra:274.7430, dec:10.5973, vmag:10.47, period:2.46529500, t0:2455113.481270, dur:3.4987},
-  {name:"GJ 9827b", host:"GJ 9827", slug:"GJ_9827b", ra:351.7702, dec:-1.2863, vmag:10.51, period:1.20897400, t0:2457738.825900, dur:1.6301},
-  {name:"K2-100", host:"K2-100", slug:"K2-100", ra:129.6012, dec:20.1061, vmag:10.52, period:1.67390350, t0:2457140.719410, dur:1.6080},
-  {name:"HAT-P-06", host:"HAT-P-06", slug:"HAT-P-06", ra:354.7742, dec:42.4660, vmag:10.54, period:3.85299720, t0:2458740.187950, dur:3.5064},
-  {name:"HAT-P-17", host:"HAT-P-17", slug:"HAT-P-17", ra:324.5370, dec:30.4887, vmag:10.54, period:10.33853780, t0:2454801.169430, dur:3.9912},
-  {name:"HAT-P-13", host:"HAT-P-13", slug:"HAT-P-13", ra:129.8825, dec:47.3520, vmag:10.62, period:2.91624121, t0:2456316.790440, dur:3.2280},
-  {name:"WASP-03", host:"WASP-03", slug:"WASP-03", ra:278.5834, dec:35.6618, vmag:10.64, period:1.84683962, t0:2454605.548970, dur:2.6592},
-  {name:"GJ 0436", host:"GJ 0436", slug:"GJ_0436", ra:175.5462, dec:26.7066, vmag:10.68, period:2.64389759, t0:2455475.824500, dur:1.0054},
-  {name:"KELT-10", host:"KELT-10", slug:"KELT-10", ra:284.5483, dec:-47.0033, vmag:10.70, period:4.16624490, t0:2457175.041970, dur:3.7680},
-  {name:"HAT-P-16", host:"HAT-P-16", slug:"HAT-P-16", ra:9.5732, dec:42.4631, vmag:10.80, period:2.77596727, t0:2456204.604299, dur:3.0624},
-  {name:"GJ 0357", host:"GJ 0357", slug:"GJ_0357", ra:144.0068, dec:-21.6608, vmag:10.91, period:3.93060000, t0:2459272.675700, dur:1.2720},
-  {name:"HAT-P-56", host:"HAT-P-56", slug:"HAT-P-56", ra:100.8480, dec:27.2523, vmag:10.91, period:2.79082640, t0:2458822.558290, dur:2.2711},
-  {name:"HAT-P-04", host:"HAT-P-04", slug:"HAT-P-04", ra:229.9914, dec:36.2297, vmag:11.00, period:3.05652540, t0:2454245.815210, dur:4.2600},
-  {name:"XO-2N", host:"XO-2N", slug:"XO-2N", ra:117.0272, dec:50.2258, vmag:11.18, period:2.61585899, t0:2454485.930683, dur:2.1874},
-  {name:"XO-1", host:"XO-1", slug:"XO-1", ra:240.5494, dec:28.1696, vmag:11.19, period:3.94153192, t0:2453808.916787, dur:2.9400},
-  {name:"HAT-P-32", host:"HAT-P-32", slug:"HAT-P-32", ra:31.0428, dec:46.6878, vmag:11.29, period:2.15000820, t0:2454420.447196, dur:3.1102},
-  {name:"HAT-P-20", host:"HAT-P-20", slug:"HAT-P-20", ra:111.9165, dec:24.3364, vmag:11.34, period:2.87531700, t0:2456670.978030, dur:1.8480},
-  {name:"HAT-P-40", host:"HAT-P-40", slug:"HAT-P-40", ra:335.5139, dec:45.4574, vmag:11.34, period:4.45724300, t0:2455813.175840, dur:6.1368},
-  {name:"GJ 0486", host:"GJ 0486", slug:"GJ_0486", ra:191.9859, dec:9.7514, vmag:11.40, period:1.46712127, t0:2459691.128107, dur:1.0159},
-  {name:"TrES-2", host:"TrES-2", slug:"TrES-2", ra:286.8085, dec:49.3164, vmag:11.41, period:2.47061313, t0:2453957.635279, dur:1.7083},
-  {name:"Qatar-08", host:"Qatar-08", slug:"Qatar-08", ra:157.4123, dec:70.5271, vmag:11.53, period:3.71464280, t0:2458210.839200, dur:4.0272},
-  {name:"WASP-17", host:"WASP-17", slug:"WASP-17", ra:239.9624, dec:-28.0617, vmag:11.55, period:3.73548749, t0:2454577.867170, dur:4.3440},
-  {name:"GJ 0238", host:"GJ 0238", slug:"GJ_0238", ra:98.4548, dec:-58.5249, vmag:11.57, period:1.74469990, t0:2458326.982220, dur:1.2384},
-  {name:"WASP-31", host:"WASP-31", slug:"WASP-31", ra:170.1220, dec:-19.0722, vmag:11.66, period:3.40590693, t0:2455873.857820, dur:3.2736},
-  {name:"WASP-12", host:"WASP-12", slug:"WASP-12", ra:97.6366, dec:29.6723, vmag:11.69, period:1.09141953, t0:2456176.668258, dur:2.7264},
-  {name:"CoRoT-07", host:"CoRoT-07", slug:"CoRoT-07", ra:100.9561, dec:-1.0630, vmag:11.72, period:0.85359159, t0:2454398.077560, dur:1.0591},
-  {name:"HAT-P-26", host:"HAT-P-26", slug:"HAT-P-26", ra:213.1564, dec:4.0600, vmag:11.74, period:4.23450158, t0:2455304.652182, dur:2.4552},
-  {name:"WASP-01", host:"WASP-01", slug:"WASP-01", ra:5.1672, dec:31.9899, vmag:11.79, period:2.51996254, t0:2454311.831270, dur:3.6720},
-  {name:"HAT-P-03", host:"HAT-P-03", slug:"HAT-P-03", ra:206.0941, dec:48.0287, vmag:11.86, period:2.89973838, t0:2457150.394720, dur:2.0750},
-  {name:"WASP-11", host:"WASP-11", slug:"WASP-11", ra:57.7194, dec:30.2383, vmag:11.89, period:3.72247085, t0:2454597.655230, dur:1.8624},
-  {name:"KELT-16", host:"KELT-16", slug:"KELT-16", ra:314.2685, dec:31.6610, vmag:11.90, period:0.96899267, t0:2458392.597911, dur:2.4888},
-  {name:"WASP-06", host:"WASP-06", slug:"WASP-06", ra:348.1593, dec:-22.6785, vmag:11.90, period:3.36100155, t0:2455266.550200, dur:3.5472},
-  {name:"WASP-02", host:"WASP-02", slug:"WASP-02", ra:307.7257, dec:6.4289, vmag:11.98, period:2.15222615, t0:2453991.514790, dur:2.4000},
-  {name:"HAT-P-05", host:"HAT-P-05", slug:"HAT-P-05", ra:274.4054, dec:36.6214, vmag:12.00, period:2.78847360, t0:2455432.455100, dur:2.9208},
-  {name:"WASP-52", host:"WASP-52", slug:"WASP-52", ra:348.4948, dec:8.7613, vmag:12.00, period:1.74977395, t0:2455793.934851, dur:1.9776},
-  {name:"GJ 1252", host:"GJ 1252", slug:"GJ_1252", ra:306.9253, dec:-56.4570, vmag:12.19, period:0.51824160, t0:2458668.097480, dur:0.7248},
-  {name:"HAT-P-36", host:"HAT-P-36", slug:"HAT-P-36", ra:188.2663, dec:44.9153, vmag:12.26, period:1.32734697, t0:2457402.229990, dur:2.2152},
-  {name:"WASP-05", host:"WASP-05", slug:"WASP-05", ra:359.3606, dec:-41.2770, vmag:12.26, period:1.62842976, t0:2454376.627870, dur:2.2613},
-  {name:"GJ 3470", host:"GJ 3470", slug:"GJ_3470", ra:119.7745, dec:15.3915, vmag:12.27, period:3.33665266, t0:2456340.725590, dur:1.9181},
-  {name:"HAT-P-09", host:"HAT-P-09", slug:"HAT-P-09", ra:110.1687, dec:37.1406, vmag:12.30, period:3.92281400, t0:2454417.908400, dur:3.4320},
-  {name:"WASP-19", host:"WASP-19", slug:"WASP-19", ra:148.4815, dec:-45.6591, vmag:12.30, period:0.78883804, t0:2458451.891919, dur:1.5830},
-  {name:"WASP-43", host:"WASP-43", slug:"WASP-43", ra:154.9083, dec:-9.8063, vmag:12.40, period:0.81347436, t0:2458649.483959, dur:1.1647},
-  {name:"TrES-3", host:"TrES-3", slug:"TrES-3", ra:268.0293, dec:37.5462, vmag:12.40, period:1.30618581, t0:2454185.910155, dur:1.3877},
-  {name:"HAT-P-23", host:"HAT-P-23", slug:"HAT-P-23", ra:306.1250, dec:16.7621, vmag:12.43, period:1.21288641, t0:2457742.573862, dur:2.1792},
-  {name:"CoRoT-02", host:"CoRoT-02", slug:"CoRoT-02", ra:291.7771, dec:1.3837, vmag:12.57, period:1.74299713, t0:2457683.441534, dur:2.2670},
-  {name:"GJ 0012", host:"GJ 0012", slug:"GJ_0012", ra:3.9552, dec:13.5562, vmag:12.60, period:12.76141600, t0:2459497.187100, dur:1.2000},
-  {name:"WASP-04", host:"WASP-04", slug:"WASP-04", ra:353.5629, dec:-42.0614, vmag:12.60, period:1.33823187, t0:2454823.591910, dur:2.2351},
-  {name:"CoRoT-11", host:"CoRoT-11", slug:"CoRoT-11", ra:280.6873, dec:5.9377, vmag:12.80, period:2.99432500, t0:2454690.498380, dur:2.4960},
-  {name:"HAT-P-12", host:"HAT-P-12", slug:"HAT-P-12", ra:209.3895, dec:43.4936, vmag:12.80, period:3.21305766, t0:2456446.635829, dur:2.3376},
-  {name:"Qatar-01", host:"Qatar-01", slug:"Qatar-01", ra:303.3817, dec:65.1621, vmag:12.84, period:1.42002424, t0:2456234.103712, dur:1.6610},
-  {name:"GJ 1132", host:"GJ 1132", slug:"GJ_1132", ra:153.7160, dec:-47.1568, vmag:13.49, period:1.62892920, t0:2457554.324500, dur:0.7824},
-  {name:"Qatar-02", host:"Qatar-02", slug:"Qatar-02", ra:207.6558, dec:-6.8040, vmag:13.49, period:1.33711644, t0:2457218.110131, dur:1.8098},
-  {name:"K2-018b", host:"K2-018", slug:"K2-018b", ra:172.5605, dec:7.5884, vmag:13.50, period:32.94003800, t0:2457527.911210, dur:2.6640},
-  {name:"CoRoT-01", host:"CoRoT-01", slug:"CoRoT-01", ra:102.0799, dec:-3.1022, vmag:13.60, period:1.50897655, t0:2454138.303971, dur:2.5054},
-  {name:"CoRoT-04", host:"CoRoT-04", slug:"CoRoT-04", ra:102.1947, dec:-0.6728, vmag:14.00, period:9.20162810, t0:2454141.364980, dur:4.4160},
-  {name:"CoRoT-05", host:"CoRoT-05", slug:"CoRoT-05", ra:101.2772, dec:0.8153, vmag:14.00, period:4.03791560, t0:2454400.198960, dur:2.8080},
-  {name:"GJ 1214", host:"GJ 1214", slug:"GJ_1214", ra:258.8289, dec:4.9638, vmag:14.67, period:1.58040453, t0:2459639.781262, dur:0.8698},
+  {name:"HD 219134b", host:"HD 219134", slug:"HD_219134b", ra:348.3207, dec:57.1684, vmag:5.57, period:3.0929386, t0:2460606.251961, dur:0.9456, perr:0.0000013, terr:0.0004402},
+  {name:"HD 136352b", host:"HD 136352", slug:"HD_136352b", ra:230.4506, dec:-48.3176, vmag:5.65, period:11.57783620835, t0:2458631.767617, dur:3.9648, perr:0.0000183652, terr:0.00118509},
+  {name:"pi Men c", host:"pi Men", slug:"pi_Men_c", ra:84.2912, dec:-80.4691, vmag:5.67, period:6.26781391964, t0:2460901.578202, dur:2.9688, perr:0.00000313694, terr:0.00072059},
+  {name:"55 Cnc e", host:"55 Cnc", slug:"55_Cnc_e", ra:133.1492, dec:28.3308, vmag:5.95, period:0.73654625, t0:2459370.807543, dur:1.5439, perr:1.5e-7, terr:0.000093},
+  {name:"HR 858b", host:"HR 858", slug:"HR_858b", ra:42.9844, dec:-30.8145, vmag:6.38, period:3.58529, t0:2459169.27128, dur:2.7048, perr:0.00001, terr:0.00163},
+  {name:"HD 063433b", host:"HD 063433", slug:"HD_063433b", ra:117.4794, dec:27.3632, vmag:6.91, period:7.1079379, t0:2458916.45262, dur:2.928, perr:0.0000054, terr:0.00062},
+  {name:"KELT-09", host:"KELT-09", slug:"KELT-09", ra:307.8598, dec:39.9388, vmag:7.56, period:1.48111874, t0:2458955.970923, dur:3.9725, perr:1.4e-7, terr:0.00005},
+  {name:"KELT-20", host:"KELT-20", slug:"KELT-20", ra:294.6614, dec:31.2192, vmag:7.59, period:3.4741012, t0:2460337.986375, dur:3.0953, perr:2e-7, terr:0.0000539},
+  {name:"HD 209458", host:"HD 209458", slug:"HD_209458", ra:330.795, dec:18.8844, vmag:7.65, period:3.5247499, t0:2455015.49844, dur:3.048, perr:3e-7, terr:0.00012},
+  {name:"HD 189733", host:"HD 189733", slug:"HD_189733", ra:300.1821, dec:22.7109, vmag:7.68, period:2.218574944, t0:2456194.067619, dur:1.807, perr:3e-8, terr:0.000034},
+  {name:"HD 097658", host:"HD 097658", slug:"HD_097658", ra:168.6382, dec:25.7104, vmag:7.71, period:9.4893037, t0:2457339.205224, dur:2.8488, perr:0.0000016, terr:0.000098},
+  {name:"KELT-11", host:"KELT-11", slug:"KELT-11", ra:161.7073, dec:-9.399, vmag:8.03, period:4.73620495, t0:2458260.168608, dur:7.1376, perr:8.6e-7, terr:0.00003},
+  {name:"HD 118203", host:"HD 118203", slug:"HD_118203", ra:203.51, dec:53.7282, vmag:8.14, period:6.134989, t0:2458712.66178, dur:5.6424, perr:0.0000013, terr:0.0002},
+  {name:"HD 149026", host:"HD 149026", slug:"HD_149026", ra:247.6234, dec:38.3473, vmag:8.16, period:2.8758885, t0:2457217.64141, dur:3.24, perr:1.4e-7, terr:0.00011},
+  {name:"HD 017156", host:"HD 017156", slug:"HD_017156", ra:42.4354, dec:71.7532, vmag:8.17, period:21.2164387, t0:2455499.305815, dur:3.1505, perr:0.0000011, terr:0.000082},
+  {name:"DS Tuc", host:"DS Tu", slug:"DS_Tuc", ra:354.9145, dec:-69.1958, vmag:8.23, period:8.13822217724, t0:2458332.308323, dur:3.12, perr:0.00000304122, terr:0.00027841},
+  {name:"WASP-33", host:"WASP-33", slug:"WASP-33", ra:36.7128, dec:37.5505, vmag:8.3, period:1.21987089, t0:2454163.22367, dur:2.5824, perr:1.5e-7, terr:0.00022},
+  {name:"KELT-24", host:"KELT-24", slug:"KELT-24", ra:161.9098, dec:71.6559, vmag:8.39, period:5.55149296, t0:2459173.347426, dur:4.3032, perr:5e-7, terr:0.000034},
+  {name:"HD 110067b", host:"HD 110067", slug:"HD_110067b", ra:189.8396, dec:20.0278, vmag:8.42, period:9.113678, t0:2459640.15797, dur:3.096, perr:0.00001, terr:0.00036},
+  {name:"KELT-07", host:"KELT-07", slug:"KELT-07", ra:78.2955, dec:33.3182, vmag:8.54, period:2.7347651, t0:2460662.485202, dur:3.48, perr:2e-7, terr:0.0000718},
+  {name:"AU Mic b", host:"AU Mic", slug:"AU_Mic_b", ra:311.2897, dec:-31.3409, vmag:8.63, period:8.463, t0:2458330.39051, dur:3.48, perr:0.000002, terr:0.00015},
+  {name:"AU Mic c", host:"AU Mic", slug:"AU_Mic_c", ra:311.2897, dec:-31.3409, vmag:8.63, period:18.859019, t0:2458342.22231, dur:3.72, perr:0.0000016, terr:0.0005},
+  {name:"KELT-02", host:"KELT-02", slug:"KELT-02", ra:92.664, dec:30.9571, vmag:8.7, period:4.11377556, t0:2459467.198989, dur:5.1744, perr:8.3e-7, terr:0.00008},
+  {name:"HAT-P-02", host:"HAT-P-02", slug:"HAT-P-02", ra:245.1515, dec:41.0481, vmag:8.71, period:5.633477, t0:2460477.275907, dur:4.2888, perr:0.000001, terr:0.0001407},
+  {name:"HD 106315b", host:"HD 106315", slug:"HD_106315b", ra:183.4725, dec:-0.3935, vmag:8.95, period:9.58028883839, t0:2459554.243825, dur:3.84, perr:0.00005457053, terr:0.00282926},
+  {name:"HD 191939b", host:"HD 191939", slug:"HD_191939b", ra:302.0256, dec:66.8503, vmag:8.97, period:8.8803281, t0:2460651.26694, dur:2.94, perr:0.0000056, terr:0.0005064},
+  {name:"HD 080606", host:"HD 080606", slug:"HD_080606", ra:140.6565, dec:50.6037, vmag:9.06, period:111.436765, t0:2458888.07466, dur:11.976, perr:0.000074, terr:0.00204},
+  {name:"HD 108236b", host:"HD 108236", slug:"HD_108236b", ra:186.5745, dec:-51.3628, vmag:9.24, period:3.79588997084, t0:2458572.107559, dur:2.2992, perr:0.00002111636, terr:0.00145813},
+  {name:"WASP-18", host:"WASP-18", slug:"WASP-18", ra:24.3544, dec:-45.6778, vmag:9.29, period:0.94145252, t0:2460933.096346, dur:2.1444, perr:1.1e-8, terr:0.000022},
+  {name:"WASP-38", host:"WASP-38", slug:"WASP-38", ra:290.7639, dec:10.1407, vmag:9.42, period:6.87186098, t0:2456012.83059, dur:4.3344, perr:null, terr:null},
+  {name:"GJ 0341", host:"GJ 0341", slug:"GJ_0341", ra:140.4067, dec:-60.2819, vmag:9.47, period:7.5768334, t0:2460006.41417, dur:2.2296, perr:0.0000352, terr:0.0048554},
+  {name:"HAT-P-11", host:"HAT-P-11", slug:"HAT-P-11", ra:297.7094, dec:48.0809, vmag:9.47, period:4.887802443, t0:2454957.8132067, dur:2.352, perr:3.4e-8, terr:0.0000053},
+  {name:"HAT-P-70", host:"HAT-P-70", slug:"HAT-P-70", ra:74.5523, dec:9.998, vmag:9.47, period:2.7443245, t0:2459188.77414, dur:3.48, perr:6e-7, terr:0.00017},
+  {name:"WASP-76", host:"WASP-76", slug:"WASP-76", ra:26.6329, dec:2.7029, vmag:9.51, period:1.80988112935, t0:2460985.484461, dur:3.6984, perr:1.5119e-7, terr:0.00009475},
+  {name:"HAT-P-60", host:"HAT-P-60", slug:"HAT-P-60", ra:28.2824, dec:52.0539, vmag:9.71, period:4.7947749, t0:2460633.665722, dur:5.0352, perr:0.0000023, terr:0.0003825},
+  {name:"HAT-P-22", host:"HAT-P-22", slug:"HAT-P-22", ra:155.6813, dec:50.1283, vmag:9.73, period:3.2122302, t0:2460362.105227, dur:2.8704, perr:3e-7, terr:0.0000882},
+  {name:"HAT-P-69", host:"HAT-P-69", slug:"HAT-P-69", ra:130.5056, dec:3.7106, vmag:9.77, period:4.7869491, t0:2459237.7717, dur:5.1264, perr:0.0000019, terr:0.00023},
+  {name:"KELT-03", host:"KELT-03", slug:"KELT-03", ra:148.6433, dec:40.3881, vmag:9.82, period:2.70339023, t0:2458872.854373, dur:2.7406, perr:4.3e-7, terr:0.000095},
+  {name:"GJ 0367", host:"GJ 0367", slug:"GJ_0367", ra:146.1243, dec:-45.7765, vmag:9.98, period:0.3219233, t0:2460013.7131, dur:0.6288, perr:4e-7, terr:0.0006209},
+  {name:"KELT-04", host:"KELT-04", slug:"KELT-04", ra:157.0625, dec:25.5732, vmag:9.98, period:2.98958682, t0:2456617.81302, dur:3.4632, perr:9.9e-7, terr:0.00031},
+  {name:"HAT-P-14", host:"HAT-P-14", slug:"HAT-P-14", ra:260.1161, dec:38.2422, vmag:10, period:4.62766098, t0:2457304.81275, dur:2.1768, perr:3.4e-7, terr:0.00015},
+  {name:"HAT-P-67", host:"HAT-P-67", slug:"HAT-P-67", ra:256.6107, dec:44.777, vmag:10.11, period:4.8101069, t0:2459010.99174, dur:6.9888, perr:7e-7, terr:0.00017},
+  {name:"HAT-P-49", host:"HAT-P-49", slug:"HAT-P-49", ra:305.4414, dec:26.6927, vmag:10.21, period:2.69155536, t0:2459013.12497, dur:4.1088, perr:5.4e-7, terr:0.0002},
+  {name:"HAT-P-08", host:"HAT-P-08", slug:"HAT-P-08", ra:343.0411, dec:35.4471, vmag:10.3, period:3.07634347, t0:2456052.75596, dur:3.8088, perr:5.8e-7, terr:0.00024},
+  {name:"WASP-77Ab", host:"WASP-77A", slug:"WASP-77Ab", ra:47.188, dec:-9.5724, vmag:10.33, period:1.36002597, t0:2456537.5482, dur:2.0306, perr:null, terr:null},
+  {name:"HAT-P-30", host:"HAT-P-30", slug:"HAT-P-30", ra:123.9499, dec:5.8367, vmag:10.36, period:2.8106007, t0:2457775.212778, dur:2.257, perr:1.3e-7, terr:0.000077},
+  {name:"HAT-P-01", host:"HAT-P-01", slug:"HAT-P-01", ra:344.4451, dec:38.6749, vmag:10.4, period:4.4652986, t0:2460606.436882, dur:2.85, perr:9e-7, terr:0.0001642},
+  {name:"KELT-06", host:"KELT-06", slug:"KELT-06", ra:195.9819, dec:30.6401, vmag:10.42, period:7.8456043, t0:2457218.65874, dur:5.832, perr:0.0000022, terr:0.00034},
+  {name:"WASP-121", host:"WASP-121", slug:"WASP-121", ra:107.6003, dec:-39.0974, vmag:10.44, period:1.274924762, t0:2458661.563783, dur:2.8406, perr:4.6e-8, terr:0.00003},
+  {name:"HAT-P-07", host:"HAT-P-07", slug:"HAT-P-07", ra:292.2473, dec:47.9695, vmag:10.46, period:2.2047354, t0:2454954.35847, dur:3.9432, perr:2e-8, terr:0.000014},
+  {name:"HAT-P-57", host:"HAT-P-57", slug:"HAT-P-57", ra:274.743, dec:10.5973, vmag:10.47, period:2.46529488, t0:2457598.49926, dur:3.4987, perr:4.6e-7, terr:0.00037},
+  {name:"GJ 9827b", host:"GJ 9827", slug:"GJ_9827b", ra:351.7702, dec:-1.2863, vmag:10.51, period:1.2089755, t0:2460231.733831, dur:1.6301, perr:3e-7, terr:0.0006433},
+  {name:"K2-100", host:"K2-100", slug:"K2-100", ra:129.6012, dec:20.1061, vmag:10.52, period:1.6739035, t0:2457140.71941, dur:1.608, perr:4e-7, terr:0.00027},
+  {name:"HAT-P-06", host:"HAT-P-06", slug:"HAT-P-06", ra:354.7742, dec:42.466, vmag:10.54, period:3.85299668, t0:2456100.88331, dur:3.5064, perr:3.6e-7, terr:0.0002},
+  {name:"HAT-P-17", host:"HAT-P-17", slug:"HAT-P-17", ra:324.537, dec:30.4887, vmag:10.54, period:10.33853522, t0:2456703.460703, dur:3.9912, perr:7e-7, terr:0.00005},
+  {name:"HAT-P-13", host:"HAT-P-13", slug:"HAT-P-13", ra:129.8825, dec:47.352, vmag:10.62, period:2.91624121, t0:2456316.79044, dur:3.228, perr:1.6e-7, terr:0.00012},
+  {name:"WASP-03", host:"WASP-03", slug:"WASP-03", ra:278.5834, dec:35.6618, vmag:10.64, period:1.84683962, t0:2454605.54897, dur:2.6592, perr:null, terr:null},
+  {name:"GJ 0436", host:"GJ 0436", slug:"GJ_0436", ra:175.5462, dec:26.7066, vmag:10.68, period:2.643897621, t0:2455290.751684, dur:1.0054, perr:9.6e-8, terr:0.000052},
+  {name:"KELT-10", host:"KELT-10", slug:"KELT-10", ra:284.5483, dec:-47.0033, vmag:10.7, period:4.1662541, t0:2457612.49947, dur:3.768, perr:0.0000016, terr:0.00041},
+  {name:"HAT-P-16", host:"HAT-P-16", slug:"HAT-P-16", ra:9.5732, dec:42.4631, vmag:10.8, period:2.77596727, t0:2456204.604299, dur:3.0624, perr:9e-8, terr:0.000069},
+  {name:"GJ 0357", host:"GJ 0357", slug:"GJ_0357", ra:144.0068, dec:-21.6608, vmag:10.91, period:3.9306, t0:2459272.6757, dur:1.272, perr:0.000002, terr:0.0004},
+  {name:"HAT-P-56", host:"HAT-P-56", slug:"HAT-P-56", ra:100.848, dec:27.2523, vmag:10.91, period:2.790825, t0:2458459.75023, dur:2.2711, perr:3.7e-7, terr:0.00016},
+  {name:"HAT-P-04", host:"HAT-P-04", slug:"HAT-P-04", ra:229.9914, dec:36.2297, vmag:11, period:3.05652301, t0:2455584.57238, dur:4.26, perr:2.9e-7, terr:0.00018},
+  {name:"XO-2N", host:"XO-2N", slug:"XO-2N", ra:117.0272, dec:50.2258, vmag:11.18, period:2.615859462, t0:2458843.218463, dur:2.1874, perr:5.4e-8, terr:0.000069},
+  {name:"XO-1", host:"XO-1", slug:"XO-1", ra:240.5494, dec:28.1696, vmag:11.19, period:3.941505, t0:2455385.51978, dur:2.94, perr:1.8e-7, terr:0.00005},
+  {name:"HAT-P-32", host:"HAT-P-32", slug:"HAT-P-32", ra:31.0428, dec:46.6878, vmag:11.29, period:2.150008197, t0:2456265.154123, dur:3.1102, perr:8.9e-8, terr:0.000044},
+  {name:"HAT-P-20", host:"HAT-P-20", slug:"HAT-P-20", ra:111.9165, dec:24.3364, vmag:11.34, period:2.87531773, t0:2457959.12043, dur:1.848, perr:1.1e-7, terr:0.000056},
+  {name:"HAT-P-40", host:"HAT-P-40", slug:"HAT-P-40", ra:335.5139, dec:45.4574, vmag:11.34, period:4.4572181, t0:2458741.56891, dur:6.1368, perr:0.0000013, terr:0.0007},
+  {name:"GJ 0486", host:"GJ 0486", slug:"GJ_0486", ra:191.9859, dec:9.7514, vmag:11.4, period:1.46712127, t0:2459939.071602, dur:1.0159, perr:3.1e-7, terr:0.00001},
+  {name:"TrES-2", host:"TrES-2", slug:"TrES-2", ra:286.8085, dec:49.3164, vmag:11.41, period:2.47061338, t0:2454955.763337, dur:1.7083, perr:1e-8, terr:0.000006},
+  {name:"Qatar-08", host:"Qatar-08", slug:"Qatar-08", ra:157.4123, dec:70.5271, vmag:11.53, period:3.7146478, t0:2459600.117319, dur:4.0272, perr:0.0000015, terr:0.0002187},
+  {name:"WASP-17", host:"WASP-17", slug:"WASP-17", ra:239.9624, dec:-28.0617, vmag:11.55, period:3.73548545, t0:2457569.98347, dur:4.344, perr:2.6e-7, terr:0.00012},
+  {name:"GJ 0238", host:"GJ 0238", slug:"GJ_0238", ra:98.4548, dec:-58.5249, vmag:11.57, period:1.744698366, t0:2460985.903551, dur:1.2384, perr:0.0000015804, terr:0.00151207},
+  {name:"WASP-31", host:"WASP-31", slug:"WASP-31", ra:170.122, dec:-19.0722, vmag:11.66, period:3.40590693, t0:2455873.85782, dur:3.2736, perr:null, terr:null},
+  {name:"WASP-12", host:"WASP-12", slug:"WASP-12", ra:97.6366, dec:29.6723, vmag:11.69, period:1.09141866569, t0:2459550.24314946, dur:2.7264, perr:1.659e-8, terr:0.00004447},
+  {name:"CoRoT-07", host:"CoRoT-07", slug:"CoRoT-07", ra:100.9561, dec:-1.063, vmag:11.72, period:0.85359165, t0:2454398.0769, dur:1.0591, perr:5e-8, terr:0.0008},
+  {name:"HAT-P-26", host:"HAT-P-26", slug:"HAT-P-26", ra:213.1564, dec:4.06, vmag:11.74, period:4.2345002, t0:2456901.059458, dur:2.4552, perr:6.4e-7, terr:0.000094},
+  {name:"WASP-01", host:"WASP-01", slug:"WASP-01", ra:5.1672, dec:31.9899, vmag:11.79, period:2.51994713, t0:2455215.32701, dur:3.672, perr:2.6e-7, terr:0.00015},
+  {name:"HAT-P-03", host:"HAT-P-03", slug:"HAT-P-03", ra:206.0941, dec:48.0287, vmag:11.86, period:2.89973815, t0:2456843.022438, dur:2.075, perr:1.3e-7, terr:0.000081},
+  {name:"WASP-11", host:"WASP-11", slug:"WASP-11", ra:57.7194, dec:30.2383, vmag:11.89, period:3.72247085, t0:2454597.65523, dur:1.8624, perr:null, terr:null},
+  {name:"KELT-16", host:"KELT-16", slug:"KELT-16", ra:314.2685, dec:31.661, vmag:11.9, period:0.968992962, t0:2458392.597691, dur:2.4888, perr:9.7e-8, terr:0.000078},
+  {name:"WASP-06", host:"WASP-06", slug:"WASP-06", ra:348.1593, dec:-22.6785, vmag:11.9, period:3.36100237, t0:2456132.410973, dur:3.5472, perr:1.4e-7, terr:0.000075},
+  {name:"WASP-02", host:"WASP-02", slug:"WASP-02", ra:307.7257, dec:6.4289, vmag:11.98, period:2.15222216, t0:2455229.043082, dur:2.4, perr:1.3e-7, terr:0.000075},
+  {name:"HAT-P-05", host:"HAT-P-05", slug:"HAT-P-05", ra:274.4054, dec:36.6214, vmag:12, period:2.78847323, t0:2457155.73168, dur:2.9208, perr:1.5e-7, terr:0.00011},
+  {name:"WASP-52", host:"WASP-52", slug:"WASP-52", ra:348.4948, dec:8.7613, vmag:12, period:1.74978119, t0:2456770.05972, dur:1.9776, perr:1e-7, terr:0.00004},
+  {name:"GJ 1252", host:"GJ 1252", slug:"GJ_1252", ra:306.9253, dec:-56.457, vmag:12.19, period:0.5182418, t0:2459060.40646, dur:0.7248, perr:7e-7, terr:0.0004},
+  {name:"HAT-P-36", host:"HAT-P-36", slug:"HAT-P-36", ra:188.2663, dec:44.9153, vmag:12.26, period:1.327346813, t0:2457885.383994, dur:2.2152, perr:9.7e-8, terr:0.000094},
+  {name:"WASP-05", host:"WASP-05", slug:"WASP-05", ra:359.3606, dec:-41.277, vmag:12.26, period:1.62842992377, t0:2454373.99703619, dur:2.2613, perr:4.255e-8, terr:0.000081},
+  {name:"GJ 3470", host:"GJ 3470", slug:"GJ_3470", ra:119.7745, dec:15.3915, vmag:12.27, period:3.3366524, t0:2456974.68988, dur:1.9181, perr:1.4e-7, terr:0.000059},
+  {name:"HAT-P-09", host:"HAT-P-09", slug:"HAT-P-09", ra:110.1687, dec:37.1406, vmag:12.3, period:3.92281131, t0:2456489.15311, dur:3.432, perr:3.9e-7, terr:0.00019},
+  {name:"WASP-19", host:"WASP-19", slug:"WASP-19", ra:148.4815, dec:-45.6591, vmag:12.3, period:0.78883804, t0:2458451.891919, dur:1.583, perr:null, terr:null},
+  {name:"WASP-43", host:"WASP-43", slug:"WASP-43", ra:154.9083, dec:-9.8063, vmag:12.4, period:0.813474056, t0:2457202.184881, dur:1.1647, perr:2.1e-8, terr:0.000031},
+  {name:"TrES-3", host:"TrES-3", slug:"TrES-3", ra:268.0293, dec:37.5462, vmag:12.4, period:1.30618626966, t0:2454185.91113531, dur:1.3877, perr:1.173e-8, terr:0.00003296},
+  {name:"HAT-P-23", host:"HAT-P-23", slug:"HAT-P-23", ra:306.125, dec:16.7621, vmag:12.43, period:1.212886397, t0:2457742.57379, dur:2.1792, perr:7.4e-8, terr:0.000072},
+  {name:"CoRoT-02", host:"CoRoT-02", slug:"CoRoT-02", ra:291.7771, dec:1.3837, vmag:12.57, period:1.74299845482, t0:2454237.53237614, dur:2.267, perr:4.05e-8, terr:0.00001812},
+  {name:"GJ 0012", host:"GJ 0012", slug:"GJ_0012", ra:3.9552, dec:13.5562, vmag:12.6, period:12.761418, t0:2460033.16351, dur:1.2, perr:0.00006, terr:0.00087},
+  {name:"WASP-04", host:"WASP-04", slug:"WASP-04", ra:353.5629, dec:-42.0614, vmag:12.6, period:1.33823136361, t0:2455804.51567913, dur:2.2351, perr:1.327e-8, terr:0.00001493},
+  {name:"CoRoT-11", host:"CoRoT-11", slug:"CoRoT-11", ra:280.6873, dec:5.9377, vmag:12.8, period:2.99427803, t0:2456019.9622, dur:2.496, perr:4.9e-7, terr:0.00037},
+  {name:"HAT-P-12", host:"HAT-P-12", slug:"HAT-P-12", ra:209.3895, dec:43.4936, vmag:12.8, period:3.21305762, t0:2456851.481119, dur:2.3376, perr:1.5e-7, terr:0.00006},
+  {name:"Qatar-01", host:"Qatar-01", slug:"Qatar-01", ra:303.3817, dec:65.1621, vmag:12.84, period:1.420024291, t0:2457570.346134, dur:1.661, perr:4.5e-8, terr:0.000042},
+  {name:"GJ 1132", host:"GJ 1132", slug:"GJ_1132", ra:153.716, dec:-47.1568, vmag:13.49, period:1.62892911, t0:2459280.98988, dur:0.7824, perr:2.9e-7, terr:0.00013},
+  {name:"Qatar-02", host:"Qatar-02", slug:"Qatar-02", ra:207.6558, dec:-6.804, vmag:13.49, period:1.33711644, t0:2457218.1101306, dur:1.8098, perr:3.2e-8, terr:0.0000063},
+  {name:"K2-018b", host:"K2-018", slug:"K2-018b", ra:172.5605, dec:7.5884, vmag:13.5, period:32.940045, t0:2457725.551189, dur:2.664, perr:0.00001, terr:0.000067},
+  {name:"CoRoT-01", host:"CoRoT-01", slug:"CoRoT-01", ra:102.0799, dec:-3.1022, vmag:13.6, period:1.50896846, t0:2456268.99083, dur:2.5054, perr:7.1e-8, terr:0.000099},
+  {name:"CoRoT-04", host:"CoRoT-04", slug:"CoRoT-04", ra:102.1947, dec:-0.6728, vmag:14, period:9.20164964154, t0:2459211.46641, dur:4.416, perr:0.00003140904, terr:0.0041813},
+  {name:"CoRoT-05", host:"CoRoT-05", slug:"CoRoT-05", ra:101.2772, dec:0.8153, vmag:14, period:4.0379156, t0:2456665.4696, dur:2.808, perr:0.0000012, terr:0.00065},
+  {name:"GJ 1214", host:"GJ 1214", slug:"GJ_1214", ra:258.8289, dec:4.9638, vmag:14.67, period:1.580404531, t0:2459639.7812619, dur:0.8698, perr:1.8e-8, terr:0.000009},
 ];
 
 function fmtRA(ra_deg){
@@ -454,6 +459,15 @@ function azCompass(az){
 }
 
 // ---------- Night window search ----------
+// NASA publishes an error on the period and on the epoch. The timing error is therefore a
+// measured quantity, not an assumption: sigma = sqrt((cycles*periodErr)^2 + epochErr^2).
+// It grows with every cycle since the reference epoch. A planet with no published error is
+// shown as such rather than given a number that would look better determined than it is.
+function sigmaAt(p, jd){
+  if(p.perr === null && p.terr === null) return null;
+  const n = Math.round((jd - p.t0)/p.period);
+  return Math.sqrt(Math.pow(n*(p.perr||0),2) + Math.pow(p.terr||0,2))*1440;
+}
 function findNightWindow(dateStr, lat, lon, twilightAlt){
   const [Y,M,D] = dateStr.split('-').map(Number);
   // the local UTC offset for this date, to locate local noon
@@ -491,6 +505,7 @@ function runCalculation(){
   const lon = parseFloat(document.getElementById('lon').value);
   const dateStr = document.getElementById('obsdate').value;
   const minAlt = parseFloat(document.getElementById('minalt').value);
+  const maxSig = parseFloat(document.getElementById('maxsig').value);
   const twilightAlt = parseFloat(document.getElementById('twilight').value);
   const status = document.getElementById('status');
 
@@ -534,8 +549,10 @@ function runCalculation(){
       const posEnd = altAz(p.ra, p.dec, endJDt, lat, lon);
       const partial = (startJDt < nightStart) || (endJDt > nightEnd) || (posStart.alt < minAlt) || (posEnd.alt < minAlt);
       if(partial) continue;
+      const sig = sigmaAt(p, midJD);
+      if(sig !== null && isFinite(maxSig) && sig > maxSig) continue;
       results.push({
-        planet:p, midJD, startJDt, endJDt,
+        planet:p, midJD, startJDt, endJDt, sig,
         alt:posMid.alt, az:posMid.az, partial
       });
     }
@@ -549,7 +566,7 @@ function runCalculation(){
 
   if(results.length===0){
     tablePanel.style.display='block';
-    tbody.innerHTML = `<tr><td colspan="8"><div class="empty">No visible transits on this night under the criteria chosen — try lowering the minimum altitude or picking a more relaxed darkness level.</div></td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="9"><div class="empty">No visible transits on this night under the criteria chosen — try lowering the minimum altitude or picking a more relaxed darkness level.</div></td></tr>`;
   } else {
     tablePanel.style.display='block';
     results.forEach(r=>{
@@ -564,6 +581,7 @@ function runCalculation(){
         <td data-label="Mid transit" class="mono">${fmtBoth(r.midJD)}</td>
         <td data-label="Transit end" class="mono">${fmtBoth(r.endJDt)}</td>
         <td data-label="Altitude"><span class="alt-pill ${altClass}">${r.alt.toFixed(1)}°</span></td>
+        <td data-label="Uncertainty" class="mono" dir="ltr">${r.sig===null?'not published':'±'+(r.sig<1?r.sig.toFixed(1):Math.round(r.sig))+' min'}</td>
       `;
       tbody.appendChild(tr);
     });
