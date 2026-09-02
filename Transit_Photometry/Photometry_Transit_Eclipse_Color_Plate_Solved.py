@@ -4132,10 +4132,47 @@ def main():
             ref_idx = 0
         ref_hdr = keep[ref_idx]["header"]
         # The companion is a property of the sky, not of the colour channel,
-        # so it is looked for once and the answer serves all three. The three
-        # planes are summed for it: on one plane this pair is missed and on
-        # the sum it is found (see detect_close_pair).
-        pair, deep_img, pair_fwhm = None, None, None
+        # so it is looked for ONCE, before any channel is measured, and the
+        # single answer serves all three. Deciding it inside the channel loop
+        # meant the first channel that happened to find it capped its aperture
+        # while the channels measured before it did not: on the first run R
+        # came out uncapped at 4.06-7.68 px while G and B were held to
+        # 1.5-3.1 px, from the very same frames.
+        #
+        # Green decides, for the same reason green chooses the reference frame
+        # - it carries the most signal on this camera - so the answer cannot
+        # depend on which channels were asked for. The three planes are summed
+        # for the fit itself: on one plane this pair is missed and on the sum
+        # it is found (see detect_close_pair).
+        pair, pair_fwhm = None, None
+        if args.pair_cap and not args.star_list:
+            try:
+                cube = fits.getdata(keep[ref_idx]["path"]).astype(float)
+                deep_img = cube.sum(axis=0)
+                g_stars, _snap, g_fwhm, _note = pick_stars(
+                    cube[1], ref_hdr, n_comps=args.n_comps, radec=over_radec)
+                # The width has to be MEASURED, and measured on the comparison
+                # stars. Not the header: on these frames it reports 5.75 px
+                # where the stars are 3.57 px wide, and every length in the
+                # detector is scaled by it - the box it fits in, the width it
+                # starts the fit at, the smallest separation it will believe -
+                # so at the header's value the pair is missed entirely. Not
+                # the target either: a blended target is wide by construction,
+                # which is the very thing being tested.
+                ws = [measure_fwhm(deep_img, float(cx), float(cy))
+                      for cx, cy in zip(g_stars.x[1:], g_stars.y[1:])]
+                ws = [w for w in ws
+                      if w is not None and np.isfinite(w) and 1.5 < w < 30]
+                pair_fwhm = float(np.median(ws)) if ws else g_fwhm
+                pair = detect_close_pair(
+                    deep_img, float(g_stars.x[0]), float(g_stars.y[0]),
+                    pair_fwhm)
+                if pair is not None:
+                    print(f"  companion {pair[0]:.2f} px away, "
+                          f"{pair[1]:.2f} mag fainter - aperture capped on "
+                          f"every channel")
+            except Exception as e:
+                print(f"  companion check skipped: {e}")
 
         for plane, cname in CHANNELS:
             if cname not in wanted:
@@ -4152,27 +4189,6 @@ def main():
                         ref_img, ref_hdr, n_comps=args.n_comps,
                         radec=over_radec)
                     note_src = blend_note
-                    if args.pair_cap and pair is None:
-                        if deep_img is None:
-                            deep_img = fits.getdata(
-                                keep[ref_idx]["path"]).astype(float).sum(axis=0)
-                        # The width has to be MEASURED, and measured on the
-                        # comparison stars. Not the header: on these frames it
-                        # reports 5.75 px where the stars are 3.41 px wide, and
-                        # every length in the detector is scaled by it - the
-                        # box it fits in, the width it starts the fit at, the
-                        # smallest separation it will believe - so at the
-                        # header's value the pair is missed entirely. Not the
-                        # target either: a blended target is wide by
-                        # construction, which is the very thing being tested.
-                        ws = [measure_fwhm(deep_img, float(cx), float(cy))
-                              for cx, cy in zip(stars.x[1:], stars.y[1:])]
-                        ws = [w for w in ws
-                              if w is not None and np.isfinite(w) and 1.5 < w < 30]
-                        pair_fwhm = float(np.median(ws)) if ws else fwhm
-                        pair = detect_close_pair(
-                            deep_img, float(stars.x[0]), float(stars.y[0]),
-                            pair_fwhm)
             except Exception as e:
                 print(f"    star selection failed: {e}")
                 continue
