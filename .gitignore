@@ -32,6 +32,7 @@ Stars_Result/
 
 # Run output
 LCO_Status_Report.txt
+*_header.txt
 *_tracks.txt
 *_light_curve.png
 *_comp_*.png
