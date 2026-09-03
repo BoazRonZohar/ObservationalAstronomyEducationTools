@@ -317,95 +317,98 @@ def pair_aperture_limit(sep, ratio, fwhm, contam=0.01):
     return lo, float(chi2.cdf((lo / s) ** 2, 2))
 
 
-def detect_close_pair(image, x, y, fwhm, max_sep_fwhm=3.0,
-                      cost_gain=0.7, min_ratio=0.05):
-    """Is the target a pair that the star finder cannot split?
+def detect_close_pair(image, x, y, fwhm, min_dip=0.10, min_ratio=0.05,
+                      min_sep_fwhm=0.7, max_sep_fwhm=3.0):
+    """Two stars or one smeared star? Read the light along the long axis.
 
     A star finder reports one source per peak and applies shape cuts, so a
     companion closer than about one FWHM is never reported at all: the pair
     arrives as a single, slightly elongated star and the blend check that
-    reads that list has nothing to warn about. That is exactly the case the
-    blend check most needs to catch. On Gaia DR3 4477867314376415360 a
-    companion 1.7 mag fainter sat 4.9 px from the target with a FWHM of
-    2.9 px - inside the 5.25 px aperture the run had chosen, contributing
-    10.4% of the light - and nothing was reported, because DAOStarFinder had
-    delivered the pair as one star.
+    reads that list has nothing to warn about. That is the case the blend
+    check most needs to catch. On Gaia DR3 4477867314376415360 a companion
+    1.7 mag fainter sat 5.1 px from the target with a FWHM of 3.6 px, inside
+    the 5.25 px aperture and contributing 10.4% of the light, and nothing was
+    reported.
 
-    So the pair is looked for in the pixels instead. Fit one Gaussian to the
-    target, fit two, and accept the second only if it earns its place three
-    times over: it has to remove a real share of the residual, sit far enough
-    out that an aperture can be steered around it, and carry enough light to
-    matter. On the frame above the three tests separate cleanly - the target
-    scores 0.50 / 4.91 px / 0.207 while the worst of twelve single comparison
-    stars scores 0.79 / 1.97 px, the fitter merely splitting one PSF in half.
+    The test is the one an observer makes by eye. Collapse the star onto its
+    own long axis and walk along the profile. ONE star, however smeared, rises
+    to a single peak and falls away. TWO stars give peak - dip - peak: the
+    topographic saddle between two summits. Nothing here depends on the PSF
+    being any particular shape, which is what makes it portable between
+    instruments.
 
-    Needs a high signal-to-noise image. On one 30 s colour plane the same
-    target scores 0.88 and is missed; on the three planes summed it is found.
-    Give it the deepest image available, and read a null as "not found",
-    never as "not there". Returns (separation_px, delta_mag) or None.
+    That portability was learned the hard way. The first version of this
+    scored a one-Gaussian fit against a two-Gaussian fit, and how much the
+    second Gaussian buys turns out to be a property of the optics rather than
+    of the star: on LCO frames of WASP-52 every star in the field scored the
+    same as the target, the target was flagged, its aperture shrank to 0.42 px
+    and all 250 frames of a clean 5.4-sigma transit were thrown away. The
+    saddle does not have that failure. On the colour pair it returns 5 px and
+    1.78 mag where Gaia says 5.12 px and 1.73; on WASP-52 it calls the target
+    single, correctly, and finds a genuine 0.36 mag pair in one comparison
+    star that Gaia confirms at 0.39 mag.
+
+    Do NOT smooth the profile: the dip of a faint companion is a couple of
+    pixels wide and a boxcar erases it. And take the brightest SECONDARY peak
+    against the main one, not the two strongest peaks - on a faint companion
+    the two strongest peaks are both on the main star.
+
+    Returns (separation_px, delta_mag) or None.
     """
-    from scipy.optimize import least_squares
-    R = int(max(6, round(3.0 * fwhm)))
+    from scipy.ndimage import rotate
+    R = int(max(6, round(2.5 * fwhm)))
     xi, yi = int(round(x)), int(round(y))
-    if (xi - R < 0 or yi - R < 0
-            or yi + R + 1 > image.shape[0] or xi + R + 1 > image.shape[1]):
+    if (xi - R < 0 or yi - R < 0 or yi + R + 1 > image.shape[0]
+            or xi + R + 1 > image.shape[1]):
         return None
     cut = image[yi - R:yi + R + 1, xi - R:xi + R + 1].astype(float)
     if cut.size == 0 or not np.all(np.isfinite(cut)):
         return None
-    yy, xx = np.mgrid[0:cut.shape[0], 0:cut.shape[1]]
-    s0 = max(float(fwhm), 1.5) / 2.3548
-    bg0 = float(np.median(cut))
-    a0 = float(np.max(cut)) - bg0
-    if not np.isfinite(a0) or a0 <= 0:
+    cut = cut - np.median(cut)
+    cut[cut < 0] = 0.0
+    if cut.sum() <= 0:
         return None
-    cx0, cy0 = x - (xi - R), y - (yi - R)
 
-    def one(p):
-        a, px, py, s, bg = p
-        return a * np.exp(-((xx - px) ** 2 + (yy - py) ** 2) / (2 * s * s)) + bg
-
-    def two(p):
-        a1, x1, y1, a2, x2, y2, s, bg = p
-        return (a1 * np.exp(-((xx - x1) ** 2 + (yy - y1) ** 2) / (2 * s * s))
-                + a2 * np.exp(-((xx - x2) ** 2 + (yy - y2) ** 2) / (2 * s * s))
-                + bg)
-
+    # the long axis, from the second moments of the light itself
+    yy, xx = np.mgrid[0:cut.shape[0], 0:cut.shape[1]]
+    tot = cut.sum()
+    cx = (cut * xx).sum() / tot
+    cy = (cut * yy).sum() / tot
+    mxx = (cut * (xx - cx) ** 2).sum() / tot
+    myy = (cut * (yy - cy) ** 2).sum() / tot
+    mxy = (cut * (xx - cx) * (yy - cy)).sum() / tot
+    ang = 0.5 * np.degrees(np.arctan2(2 * mxy, mxx - myy))
     try:
-        r1 = least_squares(lambda p: (one(p) - cut).ravel(),
-                           [a0, cx0, cy0, s0, bg0], max_nfev=4000)
-        # the second component is started from several directions - a single
-        # start lands in a local minimum that depends on which way the pair
-        # happens to lie on the chip
-        best = None
-        for dx, dy in ((1.2 * fwhm, 0.0), (-1.2 * fwhm, 0.0),
-                       (0.0, 1.2 * fwhm), (0.0, -1.2 * fwhm),
-                       (0.9 * fwhm, 0.9 * fwhm), (-0.9 * fwhm, -0.9 * fwhm)):
-            r2 = least_squares(
-                lambda p: (two(p) - cut).ravel(),
-                [a0, cx0, cy0, 0.3 * a0, cx0 + dx, cy0 + dy, s0, bg0],
-                max_nfev=6000)
-            if best is None or r2.cost < best.cost:
-                best = r2
+        prof = rotate(cut, ang, reshape=False, order=1,
+                      mode="nearest").sum(axis=0)
     except Exception:
         return None
-    if best is None or not np.isfinite(best.cost) or r1.cost <= 0:
+    if prof.size < 7 or prof.max() <= 0:
         return None
+    prof = prof / prof.max()
 
-    a1, x1, y1, a2, x2, y2, _s, _bg = best.x
-    a1, a2 = abs(a1), abs(a2)
-    if a1 < a2:                       # the brighter component is the target
-        a1, a2, x1, y1, x2, y2 = a2, a1, x2, y2, x1, y1
-    if a1 <= 0:
+    main = int(np.argmax(prof))
+    best = None
+    for i in range(1, prof.size - 1):
+        if i == main:
+            continue
+        if not (prof[i] >= prof[i - 1] and prof[i] > prof[i + 1]):
+            continue
+        lo, hi = (i, main) if i < main else (main, i)
+        floor = prof[lo:hi + 1].min()
+        if prof[i] <= 0:
+            continue
+        dip = 1.0 - floor / prof[i]          # how deep the saddle sits
+        sep = float(abs(i - main))
+        if dip < min_dip or prof[i] < min_ratio:
+            continue
+        if not (min_sep_fwhm * fwhm <= sep <= max_sep_fwhm * fwhm):
+            continue
+        if best is None or prof[i] > best[1]:
+            best = (sep, float(prof[i]))
+    if best is None:
         return None
-    sep = float(np.hypot(x1 - x2, y1 - y2))
-    ratio = a2 / a1                   # one width for both, so this is the flux ratio
-    if best.cost > cost_gain * r1.cost:
-        return None
-    if not (0.5 * fwhm < sep < max_sep_fwhm * fwhm):
-        return None
-    if ratio < min_ratio:
-        return None
+    sep, ratio = best
     return sep, float(-2.5 * np.log10(ratio))
 
 
@@ -772,7 +775,8 @@ def configure_from_csv(ref_data, stars, args):
                          if k != target_name and v is not None
                          and 1.5 < v < 30]
             pf = float(np.median(comp_fwhm)) if comp_fwhm else median_fwhm
-            pair = detect_close_pair(ref_data, float(trow.x), float(trow.y), pf)
+            pair = detect_close_pair(ref_data, float(trow.x),
+                                     float(trow.y), pf)
             if pair is not None:
                 print("   companion found %.2f px away, %.2f mag fainter"
                       % (pair[0], pair[1]))
