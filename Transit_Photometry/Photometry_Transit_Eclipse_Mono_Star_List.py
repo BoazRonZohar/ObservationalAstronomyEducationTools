@@ -412,6 +412,66 @@ def detect_close_pair(image, x, y, fwhm, min_dip=0.10, min_ratio=0.05,
     return sep, float(-2.5 * np.log10(ratio))
 
 
+def neighbours_of(image, x, y, fwhm, rmax=45.0):
+    """Distances, in pixels, from (x, y) to every star the finder sees around
+    it. Anything closer than 1.5 FWHM is left out: that is not a neighbour in
+    the ring, it is the star itself or a blend (see detect_close_pair)."""
+    R = int(max(20, round(rmax)))
+    xi, yi = int(round(x)), int(round(y))
+    if (xi - R < 0 or yi - R < 0 or yi + R + 1 > image.shape[0]
+            or xi + R + 1 > image.shape[1]):
+        return []
+    cut = image[yi - R:yi + R + 1, xi - R:xi + R + 1].astype(float)
+    if not np.all(np.isfinite(cut)):
+        return []
+    try:
+        _m, med, sd = sigma_clipped_stats(cut, sigma=3.0)
+        src = DAOStarFinder(fwhm=max(float(fwhm), 2.0), threshold=8 * sd)(cut - med)
+    except Exception:
+        return []
+    if src is None or len(src) == 0:
+        return []
+    d = np.hypot(np.array(src["xcentroid"]) - R, np.array(src["ycentroid"]) - R)
+    return sorted(float(v) for v in d if v > 1.5 * float(fwhm))
+
+
+def choose_annulus(neigh, fwhm, k_in=3.0, k_out=5.0):
+    """Keep every neighbouring star OUT of the sky ring.
+
+    The ring is supposed to hold empty sky. A star inside it lifts the sky
+    level, the tool subtracts too much, and the target comes out faint. That
+    would be a constant offset and nearly harmless - except the ring is sized
+    in FWHM, so it breathes with the seeing: a neighbour sits outside it on a
+    sharp frame and inside it on a soft one, and the target then dims and
+    brightens with the night in the shape of an eclipse.
+
+    Comparison stars never have this problem, because they are CHOSEN to be
+    isolated. The target cannot be chosen - it is whatever was pointed at - so
+    it is the one star that needs the ring adjusted for it.
+
+    The order is the observer's: pull the outer edge IN first, so the ring
+    stays local to the star; only if that leaves too thin a ring, push the
+    inner edge OUT past the offender, keeping the same ring area so the sky
+    is estimated from as many pixels as before. Measured on 30 frames of the
+    Gaia DR3 4477867314376415360 field, where two neighbours sit at 17.9 and
+    22.2 px: the target's sky excess ran +7.9 ADU on the sharpest frames and
+    +42.1 on the softest, and this rule flattens it to +9.1 and +8.0.
+
+    Returns (r_in, r_out, what_was_done).
+    """
+    r_in, r_out = k_in * float(fwhm), k_out * float(fwhm)
+    margin = 1.5 * float(fwhm)
+    inside = [d for d in (neigh or []) if r_in - margin <= d <= r_out + margin]
+    if not inside:
+        return r_in, r_out, "unchanged"
+    area = np.pi * (r_out ** 2 - r_in ** 2)
+    cand_out = min(inside) - margin
+    if cand_out > r_in * 1.35:
+        return r_in, cand_out, "shrunk"
+    new_in = max(inside) + margin
+    return new_in, float(np.sqrt(new_in ** 2 + area / np.pi)), "grown"
+
+
 def measure_reference_fwhm(ref_data, stars, names, box_half=15):
     """Measure FWHM for a list of star names on the reference frame and
     return (per_star_dict, median_fwhm)."""
@@ -783,7 +843,15 @@ def configure_from_csv(ref_data, stars, args):
         except Exception as e:
             print("   companion check skipped: " + str(e))
 
-    config = _prompt_aperture_radii(median_fwhm, args, pair=pair)
+    neigh = []
+    if getattr(args, "ring_fix", True):
+        try:
+            trow2 = stars[stars.name == target_name].iloc[0]
+            neigh = neighbours_of(ref_data, float(trow2.x), float(trow2.y),
+                                  median_fwhm)
+        except Exception:
+            neigh = []
+    config = _prompt_aperture_radii(median_fwhm, args, pair=pair, neigh=neigh)
     config.update({
         "target_name": target_name,
         "chosen_comps": chosen,
@@ -943,7 +1011,7 @@ def get_known_mags(comp_names, args):
     return prompt_known_mags_manual(comp_names)
 
 
-def _prompt_aperture_radii(median_fwhm, args, pair=None):
+def _prompt_aperture_radii(median_fwhm, args, pair=None, neigh=()):
     """Shared step 3: aperture / annulus radii as multiples of FWHM."""
     k_aperture = args.k_aperture if args.k_aperture is not None else \
         prompt_float("Aperture radius = k x FWHM -> enter k", 3.0)
@@ -955,6 +1023,16 @@ def _prompt_aperture_radii(median_fwhm, args, pair=None):
     r_aperture = k_aperture * median_fwhm
     r_ann_in = k_ann_in * median_fwhm
     r_ann_out = k_ann_out * median_fwhm
+    # This script measures every frame at one fixed ring, so the ring is
+    # chosen once, here, at the median seeing.
+    ring_note = ""
+    if neigh and getattr(args, "ring_fix", True):
+        r_ann_in, r_ann_out, _md = choose_annulus(
+            neigh, median_fwhm, k_ann_in, k_ann_out)
+        if _md != "unchanged":
+            ring_note = ("a star sits in the sky ring - ring %s to %.1f-%.1f px"
+                         % (_md, r_ann_in, r_ann_out))
+            print("==> " + ring_note)
 
     # A close companion caps the aperture here too, but the shape of the fix
     # differs from the plate-solved scripts, because this one measures every
@@ -995,6 +1073,7 @@ def _prompt_aperture_radii(median_fwhm, args, pair=None):
         "r_ann_in": r_ann_in,
         "r_ann_out": r_ann_out,
         "pair_note": pair_note,
+        "ring_note": ring_note,
     }
 
 
@@ -1950,6 +2029,10 @@ def main():
                      help="[Star Data Tool format] row number (from --comp_indices) to use "
                           "as the tracking anchor star (default: first chosen comparison star)")
 
+    ap.add_argument("--no_ring_fix", dest="ring_fix", action="store_false",
+                    help="leave the sky ring alone even when a star falls "
+                         "inside it")
+    ap.set_defaults(ring_fix=True)
     ap.add_argument("--no_pair_cap", dest="pair_cap", action="store_false",
                     help="do not look for a companion too close for a star "
                          "finder to split, and do not cap the aperture on one")

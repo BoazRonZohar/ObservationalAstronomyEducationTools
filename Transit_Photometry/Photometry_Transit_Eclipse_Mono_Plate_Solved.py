@@ -2678,6 +2678,11 @@ def measure_channel(frames, plane, stars, ref_idx, cfg, route):
                 r_ap = min(cfg["k_aperture"] * frame_fwhm, r_pair)
             r_in = cfg["k_ann_in"] * f_use
             r_out = cfg["k_ann_out"] * f_use
+            if (name == target_name and cfg.get("target_neighbours")
+                    and not cfg.get("fixed_radii_px")):
+                r_in, r_out, _mode = choose_annulus(
+                    cfg["target_neighbours"], f_use,
+                    cfg["k_ann_in"], cfg["k_ann_out"])
             if name == target_name and cfg.get("fixed_radii_px"):
                 # Radii the observer chose by eye for this field, in pixels,
                 # fixed for the whole run. They apply to the target only: the
@@ -3747,6 +3752,66 @@ def detect_close_pair(image, x, y, fwhm, min_dip=0.10, min_ratio=0.05,
     return sep, float(-2.5 * np.log10(ratio))
 
 
+def neighbours_of(image, x, y, fwhm, rmax=45.0):
+    """Distances, in pixels, from (x, y) to every star the finder sees around
+    it. Anything closer than 1.5 FWHM is left out: that is not a neighbour in
+    the ring, it is the star itself or a blend (see detect_close_pair)."""
+    R = int(max(20, round(rmax)))
+    xi, yi = int(round(x)), int(round(y))
+    if (xi - R < 0 or yi - R < 0 or yi + R + 1 > image.shape[0]
+            or xi + R + 1 > image.shape[1]):
+        return []
+    cut = image[yi - R:yi + R + 1, xi - R:xi + R + 1].astype(float)
+    if not np.all(np.isfinite(cut)):
+        return []
+    try:
+        _m, med, sd = sigma_clipped_stats(cut, sigma=3.0)
+        src = DAOStarFinder(fwhm=max(float(fwhm), 2.0), threshold=8 * sd)(cut - med)
+    except Exception:
+        return []
+    if src is None or len(src) == 0:
+        return []
+    d = np.hypot(np.array(src["xcentroid"]) - R, np.array(src["ycentroid"]) - R)
+    return sorted(float(v) for v in d if v > 1.5 * float(fwhm))
+
+
+def choose_annulus(neigh, fwhm, k_in=3.0, k_out=5.0):
+    """Keep every neighbouring star OUT of the sky ring.
+
+    The ring is supposed to hold empty sky. A star inside it lifts the sky
+    level, the tool subtracts too much, and the target comes out faint. That
+    would be a constant offset and nearly harmless - except the ring is sized
+    in FWHM, so it breathes with the seeing: a neighbour sits outside it on a
+    sharp frame and inside it on a soft one, and the target then dims and
+    brightens with the night in the shape of an eclipse.
+
+    Comparison stars never have this problem, because they are CHOSEN to be
+    isolated. The target cannot be chosen - it is whatever was pointed at - so
+    it is the one star that needs the ring adjusted for it.
+
+    The order is the observer's: pull the outer edge IN first, so the ring
+    stays local to the star; only if that leaves too thin a ring, push the
+    inner edge OUT past the offender, keeping the same ring area so the sky
+    is estimated from as many pixels as before. Measured on 30 frames of the
+    Gaia DR3 4477867314376415360 field, where two neighbours sit at 17.9 and
+    22.2 px: the target's sky excess ran +7.9 ADU on the sharpest frames and
+    +42.1 on the softest, and this rule flattens it to +9.1 and +8.0.
+
+    Returns (r_in, r_out, what_was_done).
+    """
+    r_in, r_out = k_in * float(fwhm), k_out * float(fwhm)
+    margin = 1.5 * float(fwhm)
+    inside = [d for d in (neigh or []) if r_in - margin <= d <= r_out + margin]
+    if not inside:
+        return r_in, r_out, "unchanged"
+    area = np.pi * (r_out ** 2 - r_in ** 2)
+    cand_out = min(inside) - margin
+    if cand_out > r_in * 1.35:
+        return r_in, cand_out, "shrunk"
+    new_in = max(inside) + margin
+    return new_in, float(np.sqrt(new_in ** 2 + area / np.pi)), "grown"
+
+
 def pick_stars(header, cat, bpm, img=None, n_comps=12, max_radius=1100, radec=None,
                image_shape=None):
     """Find the target and choose the comparison stars.
@@ -4147,6 +4212,11 @@ def measure(frames, stars, ref_idx, cfg):
                     r_ap = min(cfg["k_aperture"] * frame_fwhm, r_pair)
                 r_in = cfg["k_ann_in"] * f_use
                 r_out = cfg["k_ann_out"] * f_use
+                if (name == target_name and cfg.get("target_neighbours")
+                        and not cfg.get("fixed_radii_px")):
+                    r_in, r_out, _mode = choose_annulus(
+                        cfg["target_neighbours"], f_use,
+                        cfg["k_ann_in"], cfg["k_ann_out"])
                 if name == target_name and cfg.get("fixed_radii_px"):
                     r_ap, r_in, r_out = cfg["fixed_radii_px"]
                 flux, ferr, skyv = measure_flux(
@@ -4187,6 +4257,10 @@ def main():
                          "Applied after the automatic filters; never takes "
                          "the ensemble below four stars.")
     ap.add_argument("--k_aperture", type=float, default=None)
+    ap.add_argument("--no_ring_fix", dest="ring_fix", action="store_false",
+                    help="leave the sky ring alone even when a star falls "
+                         "inside it")
+    ap.set_defaults(ring_fix=True)
     ap.add_argument("--no_pair_cap", dest="pair_cap", action="store_false",
                     help="do not look for a companion too close for the star "
                          "finder to split, and do not cap the aperture on one")
@@ -4349,7 +4423,7 @@ def main():
         # go unfound. A null here means "not found", never "not there": when
         # the pair is known from Aladin or Gaia, --pair_sep_px states it and
         # the cap is applied without the detection.
-        pair, pair_fwhm = None, None
+        pair, pair_fwhm, target_neigh = None, None, []
         if args.pair_cap:
             try:
                 # measured, and measured on the COMPARISON stars - the header's
@@ -4361,6 +4435,10 @@ def main():
                       if w is not None and np.isfinite(w) and 1.5 < w < 30]
                 pair_fwhm = float(np.median(ws)) if ws else fwhm
                 pair = detect_close_pair(
+                    ref_img, float(stars.x[0]), float(stars.y[0]), pair_fwhm)
+                # distances are fixed on the sky: found once, used by every
+                # frame to size its own ring
+                target_neigh = neighbours_of(
                     ref_img, float(stars.x[0]), float(stars.y[0]), pair_fwhm)
             except Exception as e:
                 print("    companion check skipped: " + str(e))
@@ -4382,7 +4460,14 @@ def main():
         pair_cfg = dict(pair_sep_px=pair_sep, pair_ratio=pair_ratio,
                         pair_contam=args.pair_contam,
                         pair_min_flux=args.pair_min_flux,
-                        pair_fwhm=pair_fwhm)
+                        pair_fwhm=pair_fwhm,
+                        target_neighbours=(target_neigh if args.ring_fix else []))
+        if target_neigh and args.ring_fix:
+            _ri, _ro, _md = choose_annulus(target_neigh, pair_fwhm or fwhm,
+                                           args.k_ann_in, args.k_ann_out)
+            if _md != "unchanged":
+                note_src += (f"; a star sits in the sky ring - ring {_md} to "
+                             f"{_ri:.1f}-{_ro:.1f} px at the median seeing")
 
         cfg0 = dict(median_fwhm=fwhm, k_aperture=args.k_aperture,
                     k_ann_in=args.k_ann_in, k_ann_out=args.k_ann_out,
