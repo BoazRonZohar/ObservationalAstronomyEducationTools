@@ -2655,11 +2655,27 @@ def measure_channel(frames, plane, stars, ref_idx, cfg, route):
             frame_fwhm = cfg["median_fwhm"]
         row["frame_fwhm"] = float(frame_fwhm)
 
+        # The ceiling a close companion puts on the aperture, recomputed for
+        # THIS frame's seeing and applied to every star in it. One radius for
+        # the whole frame is what makes the varying flux fraction harmless:
+        # every star keeps the same share of its own light, so the share
+        # cancels in the difference.
+        r_pair, pair_drop = float("inf"), False
+        if cfg.get("pair_sep_px"):
+            r_pair, kept = pair_aperture_limit(
+                cfg["pair_sep_px"], cfg.get("pair_ratio", 0.2), frame_fwhm,
+                cfg.get("pair_contam", 0.01))
+            pair_drop = kept < cfg.get("pair_min_flux", 0.5)
+        row["pair_raper_max"] = r_pair
+        row["pair_dropped"] = pair_drop
+
         for (name, (gx, gy)), (xr, yr, ok), wv in zip(zip(names, guesses), centres, widths):
             f_use = wv if np.isfinite(wv) else frame_fwhm
             if not cfg.get("per_frame_fwhm", True):
                 f_use = cfg["median_fwhm"]
             r_ap = cfg["k_aperture"] * f_use
+            if np.isfinite(r_pair):
+                r_ap = min(cfg["k_aperture"] * frame_fwhm, r_pair)
             r_in = cfg["k_ann_in"] * f_use
             r_out = cfg["k_ann_out"] * f_use
             if name == target_name and cfg.get("fixed_radii_px"):
@@ -2675,6 +2691,10 @@ def measure_channel(frames, plane, stars, ref_idx, cfg, route):
                 img, xr, yr, r_ap, r_in, r_out,
                 gain=cfg["gain"], ron=cfg["ron"], dark=cfg["dark"])
             good = bool(ok and np.isfinite(flux) and flux > 0)
+            if pair_drop and name == target_name:
+                # the seeing here is wider than the pair is apart: no aperture
+                # separates them without throwing the star away
+                good = False
             row[f"{name}_x"] = xr
             row[f"{name}_y"] = yr
             row[f"{name}_flux"] = flux
@@ -3585,6 +3605,145 @@ def target_coord(header, radec=None):
     raise RuntimeError("no target coordinates in the header")
 
 
+def pair_aperture_limit(sep, ratio, fwhm, contam=0.01):
+    """Largest aperture that keeps a close companion's light under `contam`.
+
+    The obvious rule - scale the aperture with the seeing, as every other
+    star gets - is exactly backwards for a blended pair. A wider PSF smears
+    the companion further INTO the aperture, so as the seeing degrades the
+    aperture has to shrink, not grow. Left to grow, it swallows more of the
+    companion in the frames where the seeing is worst, and the target appears
+    to brighten whenever the night softens: measured on the run that exposed
+    this, the contamination ran from 7.3% to 14.0% across 123 frames and put
+    82 mmag of seeing-shaped error straight into the target's curve - deeper
+    than the eclipse that was being looked for.
+
+    Both fractions are exact for a Gaussian PSF. The light of a star inside a
+    circle offset from it by `sep` is the non-central chi-square with two
+    degrees of freedom, and the star's own light inside its own circle is the
+    central case - no integration and no lookup table.
+
+    Returns (r_max_px, flux_fraction_kept_at_r_max). The second number is the
+    one that decides whether the frame is worth keeping: when the seeing is
+    wide enough that separating the pair costs most of the target's light,
+    that frame did not measure this star and should be dropped rather than
+    measured and hoped over.
+    """
+    from scipy.stats import ncx2, chi2
+    s = max(float(fwhm), 0.5) / 2.3548
+    lam = (float(sep) / s) ** 2
+
+    def contamination(r):
+        u = (r / s) ** 2
+        f_t = chi2.cdf(u, 2)                      # the target's own light
+        f_c = ncx2.cdf(u, 2, lam)                 # the companion's, leaking in
+        tot = f_t + ratio * f_c
+        return (ratio * f_c / tot) if tot > 0 else 1.0
+
+    lo, hi = 0.3 * s, 3.0 * float(sep)
+    if contamination(lo) > contam:                # even a pinhole is polluted
+        return lo, float(chi2.cdf((lo / s) ** 2, 2))
+    for _ in range(60):
+        mid = 0.5 * (lo + hi)
+        if contamination(mid) > contam:
+            hi = mid
+        else:
+            lo = mid
+    return lo, float(chi2.cdf((lo / s) ** 2, 2))
+
+
+def detect_close_pair(image, x, y, fwhm, max_sep_fwhm=3.0,
+                      cost_gain=0.7, min_ratio=0.05):
+    """Is the target a pair that the star finder cannot split?
+
+    A star finder reports one source per peak and applies shape cuts, so a
+    companion closer than about one FWHM is never reported at all: the pair
+    arrives as a single, slightly elongated star and the blend check that
+    reads that list has nothing to warn about. That is exactly the case the
+    blend check most needs to catch. On Gaia DR3 4477867314376415360 a
+    companion 1.7 mag fainter sat 4.9 px from the target with a FWHM of
+    2.9 px - inside the 5.25 px aperture the run had chosen, contributing
+    10.4% of the light - and nothing was reported, because DAOStarFinder had
+    delivered the pair as one star.
+
+    So the pair is looked for in the pixels instead. Fit one Gaussian to the
+    target, fit two, and accept the second only if it earns its place three
+    times over: it has to remove a real share of the residual, sit far enough
+    out that an aperture can be steered around it, and carry enough light to
+    matter. On the frame above the three tests separate cleanly - the target
+    scores 0.50 / 4.91 px / 0.207 while the worst of twelve single comparison
+    stars scores 0.79 / 1.97 px, the fitter merely splitting one PSF in half.
+
+    Needs a high signal-to-noise image. On one 30 s colour plane the same
+    target scores 0.88 and is missed; on the three planes summed it is found.
+    Give it the deepest image available, and read a null as "not found",
+    never as "not there". Returns (separation_px, delta_mag) or None.
+    """
+    from scipy.optimize import least_squares
+    R = int(max(6, round(3.0 * fwhm)))
+    xi, yi = int(round(x)), int(round(y))
+    if (xi - R < 0 or yi - R < 0
+            or yi + R + 1 > image.shape[0] or xi + R + 1 > image.shape[1]):
+        return None
+    cut = image[yi - R:yi + R + 1, xi - R:xi + R + 1].astype(float)
+    if cut.size == 0 or not np.all(np.isfinite(cut)):
+        return None
+    yy, xx = np.mgrid[0:cut.shape[0], 0:cut.shape[1]]
+    s0 = max(float(fwhm), 1.5) / 2.3548
+    bg0 = float(np.median(cut))
+    a0 = float(np.max(cut)) - bg0
+    if not np.isfinite(a0) or a0 <= 0:
+        return None
+    cx0, cy0 = x - (xi - R), y - (yi - R)
+
+    def one(p):
+        a, px, py, s, bg = p
+        return a * np.exp(-((xx - px) ** 2 + (yy - py) ** 2) / (2 * s * s)) + bg
+
+    def two(p):
+        a1, x1, y1, a2, x2, y2, s, bg = p
+        return (a1 * np.exp(-((xx - x1) ** 2 + (yy - y1) ** 2) / (2 * s * s))
+                + a2 * np.exp(-((xx - x2) ** 2 + (yy - y2) ** 2) / (2 * s * s))
+                + bg)
+
+    try:
+        r1 = least_squares(lambda p: (one(p) - cut).ravel(),
+                           [a0, cx0, cy0, s0, bg0], max_nfev=4000)
+        # the second component is started from several directions - a single
+        # start lands in a local minimum that depends on which way the pair
+        # happens to lie on the chip
+        best = None
+        for dx, dy in ((1.2 * fwhm, 0.0), (-1.2 * fwhm, 0.0),
+                       (0.0, 1.2 * fwhm), (0.0, -1.2 * fwhm),
+                       (0.9 * fwhm, 0.9 * fwhm), (-0.9 * fwhm, -0.9 * fwhm)):
+            r2 = least_squares(
+                lambda p: (two(p) - cut).ravel(),
+                [a0, cx0, cy0, 0.3 * a0, cx0 + dx, cy0 + dy, s0, bg0],
+                max_nfev=6000)
+            if best is None or r2.cost < best.cost:
+                best = r2
+    except Exception:
+        return None
+    if best is None or not np.isfinite(best.cost) or r1.cost <= 0:
+        return None
+
+    a1, x1, y1, a2, x2, y2, _s, _bg = best.x
+    a1, a2 = abs(a1), abs(a2)
+    if a1 < a2:                       # the brighter component is the target
+        a1, a2, x1, y1, x2, y2 = a2, a1, x2, y2, x1, y1
+    if a1 <= 0:
+        return None
+    sep = float(np.hypot(x1 - x2, y1 - y2))
+    ratio = a2 / a1                   # one width for both, so this is the flux ratio
+    if best.cost > cost_gain * r1.cost:
+        return None
+    if not (0.5 * fwhm < sep < max_sep_fwhm * fwhm):
+        return None
+    if ratio < min_ratio:
+        return None
+    return sep, float(-2.5 * np.log10(ratio))
+
+
 def pick_stars(header, cat, bpm, img=None, n_comps=12, max_radius=1100, radec=None,
                image_shape=None):
     """Find the target and choose the comparison stars.
@@ -3705,6 +3864,16 @@ def choose_radii(frames, stars, cfg, n_sample=9, verbose=True):
     AP = [0.7, 0.9, 1.1, 1.3, 1.6, 2.0, 2.5]
     IN = [2.0, 2.5, 3.0, 4.0, 5.0]
     WIDTH = 2.0
+    # The scan judges radii by how quiet the COMPARISON stars are, and the
+    # target's companion does nothing to them - so a radius that reaches the
+    # companion scores well while quietly diluting the target. The ceiling is
+    # the one thing the scan cannot see for itself. Measured width, not the
+    # header's, for the reason given in detect_close_pair.
+    if cfg.get("pair_sep_px"):
+        r_max, _kept = pair_aperture_limit(
+            cfg["pair_sep_px"], cfg.get("pair_ratio", 0.2),
+            cfg.get("pair_fwhm") or fwhm, cfg.get("pair_contam", 0.01))
+        AP = [k for k in AP if k * fwhm <= r_max] or [min(AP)]
 
     idx = np.unique(np.linspace(0, len(frames) - 1,
                                 min(n_sample, len(frames))).astype(int))
@@ -3952,11 +4121,27 @@ def measure(frames, stars, ref_idx, cfg):
                 frame_fwhm = cfg["median_fwhm"]
             row["frame_fwhm"] = float(frame_fwhm)
 
+            # The ceiling a close companion puts on the aperture, recomputed for
+            # THIS frame's seeing and applied to every star in it. One radius for
+            # the whole frame is what makes the varying flux fraction harmless:
+            # every star keeps the same share of its own light, so the share
+            # cancels in the difference.
+            r_pair, pair_drop = float("inf"), False
+            if cfg.get("pair_sep_px"):
+                r_pair, kept = pair_aperture_limit(
+                    cfg["pair_sep_px"], cfg.get("pair_ratio", 0.2), frame_fwhm,
+                    cfg.get("pair_contam", 0.01))
+                pair_drop = kept < cfg.get("pair_min_flux", 0.5)
+            row["pair_raper_max"] = r_pair
+            row["pair_dropped"] = pair_drop
+
             for name, (xr, yr, ok), wv in zip(names, centres, widths):
                 f_use = wv if np.isfinite(wv) else frame_fwhm
                 if not cfg.get("per_frame_fwhm", True):
                     f_use = cfg["median_fwhm"]
                 r_ap = cfg["k_aperture"] * f_use
+                if np.isfinite(r_pair):
+                    r_ap = min(cfg["k_aperture"] * frame_fwhm, r_pair)
                 r_in = cfg["k_ann_in"] * f_use
                 r_out = cfg["k_ann_out"] * f_use
                 if name == target_name and cfg.get("fixed_radii_px"):
@@ -3965,6 +4150,8 @@ def measure(frames, stars, ref_idx, cfg):
                     img, xr, yr, r_ap, r_in, r_out,
                     gain=cfg["gain"], ron=cfg["ron"], dark=cfg["dark"])
                 good = bool(ok and np.isfinite(flux) and flux > 0)
+                if pair_drop and name == target_name:
+                    good = False
                 row[f"{name}_fwhm"] = float(wv) if np.isfinite(wv) else np.nan
                 row[f"{name}_raper"] = float(r_ap)
                 row[f"{name}_x"] = xr
@@ -3997,6 +4184,23 @@ def main():
                          "Applied after the automatic filters; never takes "
                          "the ensemble below four stars.")
     ap.add_argument("--k_aperture", type=float, default=None)
+    ap.add_argument("--no_pair_cap", dest="pair_cap", action="store_false",
+                    help="do not look for a companion too close for the star "
+                         "finder to split, and do not cap the aperture on one")
+    ap.add_argument("--pair_contam", type=float, default=0.01,
+                    help="how much of a close companion's light the target's "
+                         "aperture may carry (default 0.01 = 1%%). The "
+                         "aperture is resized every frame to hold this.")
+    ap.add_argument("--pair_min_flux", type=float, default=0.5,
+                    help="drop a frame when holding the contamination limit "
+                         "would leave less than this fraction of the target's "
+                         "own light inside the aperture (default 0.5)")
+    ap.add_argument("--pair_sep_px", type=float, default=None,
+                    help="separation in px of a companion you already know "
+                         "about (from Aladin or Gaia). The aperture is capped "
+                         "on every star. Mono has one plane to fit, so a faint "
+                         "companion can go unfound - state it here.")
+    ap.set_defaults(pair_cap=True)
     ap.add_argument("--k_ann_in", type=float, default=None)
     ap.add_argument("--k_ann_out", type=float, default=None)
     ap.add_argument("--gain", type=float, default=None,
@@ -4132,9 +4336,54 @@ def main():
             f"target from {how}, nearest detection {snap:.2f} px away")
         note_src += f"; reference frame #{ref_idx + 1} of {len(keep)}"
 
+        # A companion closer than about one FWHM is never reported by a star
+        # finder - the pair arrives as one slightly elongated star - so it is
+        # looked for in the pixels instead, and the aperture is then held
+        # under a contamination limit frame by frame. See detect_close_pair.
+        #
+        # Mono has one plane, where the colour script has three to sum, so the
+        # image handed to the detector is shallower and a faint companion can
+        # go unfound. A null here means "not found", never "not there": when
+        # the pair is known from Aladin or Gaia, --pair_sep_px states it and
+        # the cap is applied without the detection.
+        pair, pair_fwhm = None, None
+        if args.pair_cap:
+            try:
+                # measured, and measured on the COMPARISON stars - the header's
+                # FWHM is unreliable and a blended target is wide by
+                # construction, which is the thing being tested
+                ws = [measure_fwhm(ref_img, float(cx), float(cy))
+                      for cx, cy in zip(stars.x[1:], stars.y[1:])]
+                ws = [w for w in ws
+                      if w is not None and np.isfinite(w) and 1.5 < w < 30]
+                pair_fwhm = float(np.median(ws)) if ws else fwhm
+                pair = detect_close_pair(
+                    ref_img, float(stars.x[0]), float(stars.y[0]), pair_fwhm)
+            except Exception as e:
+                print("    companion check skipped: " + str(e))
+
+        pair_sep = pair_ratio = None
+        if args.pair_sep_px:
+            pair_sep, pair_ratio = float(args.pair_sep_px), 0.2
+        if pair is not None:
+            sep_px, dmag = pair
+            pair_sep, pair_ratio = sep_px, 10 ** (-0.4 * dmag)
+            r_med, kept_med = pair_aperture_limit(
+                sep_px, pair_ratio, pair_fwhm or fwhm, args.pair_contam)
+            note_src += (f"; companion {sep_px:.2f} px away, {dmag:.2f} mag "
+                         f"fainter, unresolved by the star finder - aperture "
+                         f"follows the seeing under a "
+                         f"{args.pair_contam * 100:.0f}% contamination limit "
+                         f"({r_med:.2f} px at the median, "
+                         f"{kept_med * 100:.0f}% of the target's light)")
+        pair_cfg = dict(pair_sep_px=pair_sep, pair_ratio=pair_ratio,
+                        pair_contam=args.pair_contam,
+                        pair_min_flux=args.pair_min_flux,
+                        pair_fwhm=pair_fwhm)
+
         cfg0 = dict(median_fwhm=fwhm, k_aperture=args.k_aperture,
                     k_ann_in=args.k_ann_in, k_ann_out=args.k_ann_out,
-                    centroid_box=8)
+                    centroid_box=8, **pair_cfg)
         k_use, kin_use, kout_use = args.k_aperture, args.k_ann_in, args.k_ann_out
         if args.auto_radii:
             try:
@@ -4149,7 +4398,8 @@ def main():
                    gain=gain, ron=ron, dark=args.dark, centroid_box=8,
                    known_mags={}, per_frame_fwhm=args.per_frame_fwhm, fwhm_box=15,
                    exclude_comps=[c.strip() for c in args.exclude.split(",")
-                                  if c.strip()])
+                                  if c.strip()],
+                   **pair_cfg)
 
         radii_note = ""
         if over_radec is not None:
