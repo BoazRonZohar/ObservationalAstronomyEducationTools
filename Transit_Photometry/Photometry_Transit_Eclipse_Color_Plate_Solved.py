@@ -2741,6 +2741,65 @@ def choose_annulus(neigh, fwhm, k_in=3.0, k_out=5.0):
     return new_in, float(np.sqrt(new_in ** 2 + area / np.pi)), "grown"
 
 
+def unify_comp_names(per_channel, deep_image, tol=8.0):
+    """Give every comparison star ONE name across the colour channels.
+
+    Each channel picks its own comparison stars, and it should: the sensitivity
+    differs, a star saturated in blue can be perfect in red, and forcing one
+    channel's list on the others is expensive - tried on 2026-09-08, it cost
+    red 6 comparison stars and took its noise from 30.8 to 53.0 mmag on the
+    Kinneret WASP-52 night, and cost blue 4 stars on the same frames.
+
+    What is NOT wanted is the side effect: each channel numbered its own picks
+    from one downwards, the rankings came out in a different order, and the
+    same name landed on different stars. On that same night the star at
+    (1801, 1622) was C4 in red, C1 in green and C3 in blue. An observer reading
+    a name off stars_used.png could not carry it to the next channel, and the
+    three-colour agreement the summary invites was comparing curves built from
+    different ensembles.
+
+    So the names come from the UNION of what the channels chose, not from a
+    list imposed on them. Nothing can be lost that way - the pool is built out
+    of their own picks, so every channel keeps every star it selected, by
+    construction. The union runs about 18-21 stars where each channel picks 12.
+
+    Numbering is by brightness on the summed image, so it is the same whichever
+    channels were asked for. Returns {channel: DataFrame} with the names
+    replaced; the target keeps its own name and each channel's own position.
+    """
+    union = []                       # [(x, y)] in the order they were first seen
+    for df in per_channel.values():
+        for x, y in zip(df.x[1:], df.y[1:]):
+            x, y = float(x), float(y)
+            if not any(np.hypot(u[0] - x, u[1] - y) < tol for u in union):
+                union.append((x, y))
+
+    def brightness(x, y, r=6):
+        xi, yi = int(round(x)), int(round(y))
+        y0, y1 = max(yi - r, 0), min(yi + r + 1, deep_image.shape[0])
+        x0, x1 = max(xi - r, 0), min(xi + r + 1, deep_image.shape[1])
+        box = deep_image[y0:y1, x0:x1]
+        return float(box.sum() - np.median(box) * box.size) if box.size else 0.0
+
+    order = sorted(range(len(union)), key=lambda i: -brightness(*union[i]))
+    name_of = {}
+    for rank, i in enumerate(order, start=1):
+        name_of[i] = "C%d" % rank
+
+    out = {}
+    for ch, df in per_channel.items():
+        names = [df.name.iloc[0]]
+        for x, y in zip(df.x[1:], df.y[1:]):
+            x, y = float(x), float(y)
+            j = min(range(len(union)),
+                    key=lambda i: np.hypot(union[i][0] - x, union[i][1] - y))
+            names.append(name_of[j])
+        d = df.copy()
+        d["name"] = names
+        out[ch] = d
+    return out
+
+
 def pick_stars(image, header, n_comps=12, max_radius=1300, sat_level=None,
                max_snap=30.0, radec=None):
     """Find the target and choose the comparison stars automatically.
@@ -4216,13 +4275,41 @@ def main():
         # depend on which channels were asked for. The three planes are summed
         # for the fit itself: on one plane this pair is missed and on the sum
         # it is found (see detect_close_pair).
+        # Every channel picks its own comparison stars - that freedom is
+        # worth keeping, see unify_comp_names - but the NAMES are then made to
+        # agree, so C7 is one star everywhere.
+        cube = fits.getdata(keep[ref_idx]["path"]).astype(float)
+        deep_img = cube.sum(axis=0)
+        picked, picked_meta = {}, {}
+        if not args.star_list:
+            for plane, cname in CHANNELS:
+                if cname not in wanted:
+                    continue
+                try:
+                    df, sn, fw, nt = pick_stars(cube[plane], ref_hdr,
+                                                n_comps=args.n_comps,
+                                                radec=over_radec)
+                    picked[cname] = df
+                    picked_meta[cname] = (sn, fw, nt)
+                except Exception as e:
+                    print(f"  {cname}: star selection failed ({e})")
+            if picked:
+                try:
+                    picked = unify_comp_names(picked, deep_img)
+                except Exception as e:
+                    print(f"  could not unify the star names ({e})")
+
         pair, pair_fwhm, target_neigh = None, None, []
-        if args.pair_cap and not args.star_list:
+        if args.pair_cap and picked:
             try:
-                cube = fits.getdata(keep[ref_idx]["path"]).astype(float)
-                deep_img = cube.sum(axis=0)
-                g_stars, _snap, g_fwhm, _note = pick_stars(
-                    cube[1], ref_hdr, n_comps=args.n_comps, radec=over_radec)
+                # "picked.get('G') or ..." is a trap here: a DataFrame has no
+                # truth value, so that expression raises and the whole
+                # companion check disappears into the except below - silently,
+                # which is how it went unnoticed until a run came back with
+                # the pre-fix numbers.
+                gk = "G" if "G" in picked else next(iter(picked))
+                g_stars = picked[gk]
+                g_fwhm = picked_meta[gk][1]
                 # The width has to be MEASURED, and measured on the comparison
                 # stars. Not the header: on these frames it reports 5.75 px
                 # where the stars are 3.57 px wide, and every length in the
@@ -4261,11 +4348,13 @@ def main():
                     stars = stars_from_list(args.star_list)
                     snap, fwhm = float("nan"), float(ref_hdr.get("FWHM", 5.0))
                     note_src = "star list supplied"
+                elif cname in picked:
+                    # this channel's own choice, under the shared names
+                    stars = picked[cname].copy()
+                    snap, fwhm, note_src = picked_meta[cname]
                 else:
-                    stars, snap, fwhm, blend_note = pick_stars(
-                        ref_img, ref_hdr, n_comps=args.n_comps,
-                        radec=over_radec)
-                    note_src = blend_note
+                    print("    no stars for this channel")
+                    continue
             except Exception as e:
                 print(f"    star selection failed: {e}")
                 continue
