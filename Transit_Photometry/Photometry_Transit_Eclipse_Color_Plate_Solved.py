@@ -2741,6 +2741,271 @@ def choose_annulus(neigh, fwhm, k_in=3.0, k_out=5.0):
     return new_in, float(np.sqrt(new_in ** 2 + area / np.pi)), "grown"
 
 
+def comp_star_table(out_root):
+    """What every comparison star did, per channel, from the measurements.
+
+    The one thing needed to choose an ensemble by hand, and the tool did not
+    write it down anywhere. Brightness relative to the target says which stars
+    saturate the way the target does; the per-frame scatter of (target - star)
+    says which of them actually held still. On the WASP-52 night of 2026-09-07
+    the two columns tell the whole story at a glance - everything brighter than
+    1.4x the target scatters 36-67 mmag, everything within 1.2x scatters 21-27.
+
+    Returns (lines, stats, all_comps, target_name, tables) - the text ready to
+    print or write, and the pieces a caller may want to reuse.
+    """
+    import glob as _glob
+    details = os.path.join(out_root, "Details")
+    tables = {}
+    for f in sorted(_glob.glob(os.path.join(details, "*_wcs.csv"))):
+        ch = os.path.basename(f).split("_wcs.csv")[0]
+        try:
+            df = pd.read_csv(f)
+        except Exception:
+            continue
+        df = df[df["jd"].notna()].reset_index(drop=True)
+        if not df.empty:
+            tables[ch] = df
+    if not tables:
+        return [], {}, [], "V", {}
+
+    ch0 = "G" if "G" in tables else sorted(tables)[0]
+    names = [c[:-5] for c in tables[ch0].columns if c.endswith("_flux")]
+    tname = "V" if "V" in names else names[0]
+    all_comps = sorted([n for n in names if n != tname],
+                       key=lambda z: int(z[1:]) if z[1:].isdigit() else 0)
+    chans = sorted(tables)
+
+    stats, rel_of = {}, {}
+    for c in all_comps:
+        for ch in chans:
+            df = tables[ch]
+            if f"{c}_flux" not in df or f"{tname}_flux" not in df:
+                continue
+            fv = df[f"{tname}_flux"].to_numpy(float)
+            fc = df[f"{c}_flux"].to_numpy(float)
+            m = -2.5 * np.log10(fv / fc)
+            stats.setdefault(ch, {})[c] = _p2p_noise(m)
+            if ch == ch0:
+                rel_of[c] = float(np.nanmedian(fc) / np.nanmedian(fv))
+
+    lines = ["  name   brightness   " +
+             "  ".join("%s scatter" % ch for ch in chans),
+             "                        " +
+             "  ".join("   (mmag)  " for _ch in chans)]
+    for c in all_comps:
+        rel = rel_of.get(c, float("nan"))
+        cells = []
+        for ch in chans:
+            v = stats.get(ch, {}).get(c, float("nan"))
+            cells.append("%9.0f  " % (1000 * v) if np.isfinite(v) else "        -  ")
+        flag = "   <- close to the target" if np.isfinite(rel) and rel <= 1.25 else ""
+        lines.append("  %-5s   %6.2fx   %s%s"
+                     % (c, rel, "".join(cells), flag))
+    lines.append("")
+    lines.append("  brightness is this star's flux divided by the target's.")
+    lines.append("  A star much brighter than the target may be saturated, and a")
+    lines.append("  saturated comparison star adds noise instead of removing it.")
+    lines.append("  scatter is the frame-to-frame scatter of (target - this star):")
+    lines.append("  it is what that star would contribute as noise. Smaller is better.")
+    return lines, stats, all_comps, tname, tables
+
+
+def write_comp_star_table(out_root, target):
+    """Leave the table on disk beside the light curves, so the choice can be
+    made later without re-deriving anything."""
+    lines, _s, _c, _t, tables = comp_star_table(out_root)
+    if not lines:
+        return None
+    path = os.path.join(out_root, "comparison_stars.txt")
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("Comparison stars - %s\n" % target)
+            f.write("=" * 70 + "\n\n")
+            f.write("  %d frames, channels: %s\n\n"
+                    % (len(next(iter(tables.values()))), ", ".join(sorted(tables))))
+            f.write("\n".join(lines) + "\n\n")
+            f.write("  To use a different set, run the tool again on this folder:\n")
+            f.write("  it will offer to rebuild the light curve from these same\n")
+            f.write("  measurements, in seconds, with whichever stars you name.\n")
+    except Exception:
+        return None
+    return path
+
+
+def reselect_from_measurements(out_root, ask=True, comps=None, exclude=None):
+    """Choose the comparison stars again WITHOUT re-measuring the frames.
+
+    Everything the ensemble needs is already in Details/<channel>_wcs.csv: the
+    flux of the target and of all twelve comparison stars, in every frame. So
+    changing which of them make up the ensemble is arithmetic on a file that
+    already exists - seconds - where a fresh run re-reads twelve gigabytes and
+    takes minutes.
+
+    That matters because of WHEN the observer can judge. The per-comparison
+    plots the run leaves in Details are the thing worth looking at, and they
+    only exist once the run is over. Being asked before measurement is being
+    asked too early; this is the same question after the evidence.
+
+    The original run is not touched. New outputs are written beside it with a
+    _reselected suffix.
+    """
+    import glob as _glob
+    details = os.path.join(out_root, "Details")
+    files = sorted(_glob.glob(os.path.join(details, "*_wcs.csv")))
+    if not files:
+        print(f"  no measurements found in {details}")
+        return False
+    target = os.path.basename(out_root).replace("Output_", "")
+
+    tables = {}
+    for f in files:
+        ch = os.path.basename(f).split("_wcs.csv")[0]
+        try:
+            df = pd.read_csv(f)
+        except Exception as e:
+            print(f"  could not read {os.path.basename(f)}: {e}")
+            continue
+        df = df[df["jd"].notna()].reset_index(drop=True)
+        if df.empty:
+            continue
+        tables[ch] = df
+    if not tables:
+        print("  the measurement files are empty")
+        return False
+
+    lines, stats, all_comps, tname, _t = comp_star_table(out_root)
+    ch0 = "G" if "G" in tables else sorted(tables)[0]
+    print(f"\n  {target}: measurements from the previous run, "
+          f"{len(tables[ch0])} frames\n")
+    for ln in lines:
+        print("  " + ln)
+
+    want = list(comps or [])
+    if not want and exclude:
+        want = [c for c in all_comps if c not in set(exclude)]
+    while ask and not want:
+        try:
+            raw = input("  Which comparison stars? (names separated by commas, "
+                        "or Enter to leave the run as it is): ").strip()
+        except EOFError:
+            raw = ""
+        if raw == "":
+            print("  left unchanged")
+            return False
+        cand = [w.strip().upper() for w in raw.replace(";", ",").split(",") if w.strip()]
+        bad = [w for w in cand if w not in all_comps]
+        if bad:
+            print("     no such star: %s  - the names are %s"
+                  % (", ".join(bad), ", ".join(all_comps)))
+            continue
+        if len(cand) < 2:
+            print("     at least two comparison stars are needed")
+            continue
+        want = cand
+    if not want:
+        return False
+
+    for ch in sorted(tables):
+        df = tables[ch]
+        have = [c for c in want if f"{c}_flux" in df.columns]
+        missing = [c for c in want if c not in have]
+        if len(have) < 2:
+            print(f"  {ch}: only {len(have)} of the chosen stars were measured "
+                  f"here - left unchanged")
+            continue
+        w = {c: 1.0 / stats[ch][c] ** 2 for c in have
+             if np.isfinite(stats.get(ch, {}).get(c, np.nan)) and stats[ch][c] > 0}
+        df = recompute_ensemble(df, tname, have, comp_weights=w or None)
+        cfg = dict(target_name=tname, chosen_comps=all_comps, final_comps=have,
+                   rejected_comps=[c for c in all_comps if c not in have],
+                   median_fwhm=float(np.nanmedian(df.get("frame_fwhm", pd.Series([np.nan])))))
+        noise = noise_mmag(df, have)
+        base = os.path.join(out_root, f"{ch}_reselected")
+        try:
+            write_lightcurve_sheet(df, cfg, base + "_light_curve.xlsx", target, ch,
+                                   measured_noise=noise)
+        except Exception as e:
+            print(f"  {ch}: could not write the spreadsheet ({e})")
+        try:
+            plot_channel(df, cfg, base,
+                         f"{target}  -  channel {ch}  (comparison stars chosen by hand)",
+                         measured_noise=noise, channel=ch)
+        except Exception as e:
+            print(f"  {ch}: could not draw the light curve ({e})")
+        try:
+            df.to_csv(os.path.join(details, f"{ch}_reselected.csv"), index=False)
+        except Exception:
+            pass
+        note = (" (%s not measured here)" % ", ".join(missing)) if missing else ""
+        print("  %s: %s%s  ->  noise %.1f mmag"
+              % (ch, ", ".join(have), note, noise if np.isfinite(noise) else float("nan")))
+    print(f"\n  written beside the original run as *_reselected.*  in {out_root}")
+    return True
+
+
+def prompt_comp_choice(picked, deep_image, target_name="V"):
+    """Show the comparison stars that were found and ask which to use.
+
+    A command-line switch is no use to someone who will not remember it a year
+    from now, and this is a choice worth offering every run: the automatic
+    gates rank on stability over hours and cannot see saturation, so on a night
+    with too long an exposure they pick the brightest stars, which are exactly
+    the clipped ones. What the observer needs in front of them at that moment
+    is how each star compares in BRIGHTNESS with the target - a comparison star
+    close to the target saturates the same way it does, and the error cancels.
+
+    Returns a list of names, or [] to leave the choice automatic.
+    """
+    def box_flux(x, y, r=6):
+        xi, yi = int(round(x)), int(round(y))
+        y0, y1 = max(yi - r, 0), min(yi + r + 1, deep_image.shape[0])
+        x0, x1 = max(xi - r, 0), min(xi + r + 1, deep_image.shape[1])
+        b = deep_image[y0:y1, x0:x1]
+        return float(b.sum() - np.median(b) * b.size) if b.size else 0.0
+
+    seen, where = {}, {}
+    tflux = 0.0
+    for ch, df in picked.items():
+        tflux = tflux or box_flux(float(df.x.iloc[0]), float(df.y.iloc[0]))
+        for name, x, y in zip(df.name[1:], df.x[1:], df.y[1:]):
+            seen.setdefault(name, (float(x), float(y)))
+            where.setdefault(name, []).append(ch)
+    if not seen or tflux <= 0:
+        return []
+    order = sorted(seen, key=lambda n: int(n[1:]))
+
+    print("\n  Comparison stars found (brightness is relative to the target):")
+    print("     name   brightness      position        measured in")
+    for n in order:
+        x, y = seen[n]
+        rel = box_flux(x, y) / tflux
+        flag = "  <- close to the target" if rel <= 1.25 else ""
+        print("     %-5s   %5.2fx     %6.0f,%6.0f     %-8s%s"
+              % (n, rel, x, y, "".join(sorted(where[n])), flag))
+    print("     A star much brighter than the target may be saturated, and a")
+    print("     saturated comparison star adds noise instead of removing it.")
+    while True:
+        try:
+            raw = input("  Which comparison stars? "
+                        "(names separated by commas, or Enter to choose "
+                        "automatically): ").strip()
+        except EOFError:
+            return []
+        if raw == "":
+            return []
+        want = [w.strip().upper() for w in raw.replace(";", ",").split(",") if w.strip()]
+        unknown = [w for w in want if w not in seen]
+        if unknown:
+            print("     no such star: %s  - the names are %s"
+                  % (", ".join(unknown), ", ".join(order)))
+            continue
+        if len(want) < 2:
+            print("     at least two comparison stars are needed")
+            continue
+        return want
+
+
 def unify_comp_names(per_channel, deep_image, tol=8.0):
     """Give every comparison star ONE name across the colour channels.
 
@@ -3900,7 +4165,7 @@ def finder_chart(image, stars, config, out_path, target_name, channel, note=""):
 
 
 def plot_channel(df, config, out_base, title, flip_marks=None, step_marks=None,
-                 measured_noise=None, comp_base=None):
+                 measured_noise=None, comp_base=None, channel=None):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -3972,7 +4237,11 @@ def plot_channel(df, config, out_base, title, flip_marks=None, step_marks=None,
         plt.xlabel("Elapsed time (minutes)")
         plt.ylabel(f"{tname} - {c} (mag)")
         sd = float(np.std(diff, ddof=1) * 1000) if len(diff) > 2 else float("nan")
-        plt.title(f"{c} vs {tname}   scatter={sd:.1f} mmag   ({status})")
+        # the channel goes in the title too: these are opened one after
+        # another and without it there is nothing on the picture to say which
+        # filter it belongs to
+        ch_txt = f"channel {channel}   " if channel else ""
+        plt.title(f"{ch_txt}{c} vs {tname}   scatter={sd:.1f} mmag   ({status})")
         plt.tight_layout()
         plt.savefig(f"{comp_base or out_base}_comp_{c}.png", dpi=150)
         plt.close()
@@ -4117,6 +4386,13 @@ def main():
                     help="optional: your own star list; overrides the automatic choice")
     ap.add_argument("--n_comps", type=int, default=12)
     ap.add_argument("--k_aperture", type=float, default=None)
+    ap.add_argument("--reselect", action="store_true",
+                    help="answer yes to the 'choose from the previous run' "
+                         "question without being asked. The question is put "
+                         "on its own whenever a previous run is found.")
+    ap.add_argument("--no_ask_comps", action="store_true",
+                    help="do not ask which comparison stars to use; take the "
+                         "automatic choice")
     ap.add_argument("--comps", default=None,
                     help="use exactly these comparison stars, e.g. "
                          "C9,C10,C11,C12 - overrides the automatic choice. "
@@ -4191,6 +4467,46 @@ def main():
             "Enter path to the folder where the results should be saved",
             default=os.path.join(args.folder, "Results"))
     os.makedirs(args.output_dir, exist_ok=True)
+
+    # Choosing again after the evidence: no frame is read, the previous run's
+    # measurements are enough. See reselect_from_measurements.
+    #
+    # This is OFFERED, not hidden behind a switch. A switch is no use to
+    # someone who will not remember it a year from now, and this is the
+    # question that matters most on a second visit to a night: the
+    # per-comparison-star plots only exist once a run is over, so the useful
+    # moment to choose is exactly here, when the tool can see that a run has
+    # already happened.
+    roots = sorted(glob.glob(os.path.join(args.output_dir, "Output_*")))
+    roots = [r for r in roots
+             if glob.glob(os.path.join(r, "Details", "*_wcs.csv"))]
+    if roots and not args.no_ask_comps:
+        if args.reselect:
+            ans = "y"
+        else:
+            print("\n  A previous run was found here:")
+            for r in roots:
+                print("     " + os.path.basename(r))
+            print("  Its measurements are enough to choose the comparison stars")
+            print("  again - seconds instead of a full re-measurement, and the")
+            print("  plots in Details show how each star behaved.")
+            while True:
+                try:
+                    ans = input("  Choose comparison stars from the previous run "
+                                "instead of measuring again? [y/N]: ").strip().lower()
+                except EOFError:
+                    ans = ""
+                if ans in ("", "n", "no", "y", "yes"):
+                    break
+                print(f"     '{ans}' is not y or n - please answer y or n "
+                      f"(check the keyboard language)")
+        if ans in ("y", "yes"):
+            for root in roots:
+                reselect_from_measurements(
+                    root, ask=True,
+                    comps=[c.strip() for c in (args.comps or "").split(",") if c.strip()],
+                    exclude=[c.strip() for c in (args.exclude or "").split(",") if c.strip()])
+            return
 
     targets, skipped = scan_folder(args.folder)
     if not targets:
@@ -4347,6 +4663,12 @@ def main():
                     picked = unify_comp_names(picked, deep_img)
                 except Exception as e:
                     print(f"  could not unify the star names ({e})")
+        # Not asked here. Before anything is measured the only thing that can
+        # be shown is how bright each star is, and the number that decides is
+        # how much it SCATTERS - which does not exist yet. So the first run
+        # measures, writes comparison_stars.txt, and the question is put on
+        # the next run over the same folder, where both columns are real.
+        manual_list = [c.strip() for c in (args.comps or "").split(",") if c.strip()]
 
         pair, pair_fwhm, target_neigh = None, None, []
         if args.pair_cap and picked:
@@ -4465,8 +4787,7 @@ def main():
                        k_ann_out=kout_use, gain=args.gain, ron=args.ron,
                        dark=args.dark, centroid_box=8, known_mags={},
                        per_frame_fwhm=args.per_frame_fwhm, fwhm_box=15,
-                       manual_comps=[c.strip() for c in (args.comps or "").split(",")
-                                     if c.strip()],
+                       manual_comps=list(manual_list),
                        exclude_comps=[c.strip() for c in (args.exclude or "").split(",")
                                       if c.strip()],
                        **pair_cfg)
@@ -4556,7 +4877,8 @@ def main():
             plot_channel(df_w, cfg_w, base + "_wcs",
                          f"{tname}  -  channel {cname}  (positions from the plate solution)",
                          flip_marks=flips, step_marks=step_marks,
-                         measured_noise=noise, comp_base=dbase + "_wcs")
+                         measured_noise=noise, comp_base=dbase + "_wcs",
+                         channel=cname)
             if not df_a.empty:
                 with quiet():
                     write_outputs(df_a, cfg_a, dbase + "_anchor", ["csv"])
@@ -4626,7 +4948,23 @@ def main():
     # what ran and where it went - off the top.
     print("")
     for tname, tdir in sorted(target_dirs.items()):
-        print(f"  {tname}  ->  {os.path.abspath(tdir)}")
+        # The table on screen at the end of EVERY run, not only when it is
+        # about to be acted on. It is the one place the two numbers that decide
+        # an ensemble sit side by side, and it costs nothing to show.
+        try:
+            lines, _s, _c, _t, _tb = comp_star_table(tdir)
+            if lines:
+                print("")
+                print("  Comparison stars - " + str(tname))
+                for ln in lines:
+                    print("  " + ln)
+        except Exception as e:
+            print(f"  could not build the comparison-star table ({e})")
+        tbl = write_comp_star_table(tdir, tname)
+        print("")
+        print("  " + str(tname) + "  ->  " + os.path.abspath(tdir))
+        if tbl:
+            print(f"     comparison-star table: {os.path.basename(tbl)}")
 
 
 if __name__ == "__main__":
