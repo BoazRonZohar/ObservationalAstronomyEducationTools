@@ -3445,6 +3445,46 @@ def measure_channel(frames, plane, stars, ref_idx, cfg, route):
                       comp_trend_ratio=trend, drift_rejected=drifters,
                       completeness_failed=failed, rejected_comps=rejected,
                       final_comps=good)
+
+    # The observer's own choice of comparison stars, applied LAST so it wins
+    # over every automatic gate. The gates are worth having - they caught the
+    # incomplete and the drifting - but they rank on stability over hours and
+    # know nothing about saturation, and on the WASP-52 night of 2026-09-07
+    # they chose three stars whose cores were clipped twice as hard as the
+    # target's and left the four matched to it on the floor: 32 mmag against
+    # 19 for the same frames.
+    #
+    # --comps names the ensemble outright. --exclude drops from whatever the
+    # gates chose, and refuses to take a working ensemble below four stars,
+    # since below that the noise figure has nothing to measure itself on.
+    # Names mean the same star in every channel now (see unify_comp_names), so
+    # one list read off stars_used.png serves all three - but a star this
+    # channel never measured is reported and skipped rather than invented.
+    want = list(cfg.get("manual_comps") or [])
+    drop = set(cfg.get("exclude_comps") or [])
+    chosen = None
+    if want:
+        unknown = [c for c in want if c not in comps]
+        chosen = [c for c in want if c in comps]
+        config["manual_missing"] = unknown
+    elif drop:
+        kept = [c for c in config["final_comps"] if c not in drop]
+        if len(kept) >= 4 or len(config["final_comps"]) < 4:
+            chosen = kept
+        else:
+            config["manual_refused"] = len(kept)
+    if chosen and list(chosen) != list(config["final_comps"]):
+        w = {}
+        for c in chosen:
+            col = f"{c}_mag"
+            if col not in df:
+                continue
+            sc = _p2p_noise(df[col].to_numpy(float))
+            if np.isfinite(sc) and sc > 0:
+                w[c] = 1.0 / sc ** 2
+        df = recompute_ensemble(df, target_name, list(chosen),
+                                comp_weights=w or None)
+        config.update(final_comps=list(chosen), manual_comps=True)
     return df, config
 
 
@@ -4077,6 +4117,15 @@ def main():
                     help="optional: your own star list; overrides the automatic choice")
     ap.add_argument("--n_comps", type=int, default=12)
     ap.add_argument("--k_aperture", type=float, default=None)
+    ap.add_argument("--comps", default=None,
+                    help="use exactly these comparison stars, e.g. "
+                         "C9,C10,C11,C12 - overrides the automatic choice. "
+                         "Names come from stars_used.png and mean the same "
+                         "star in every channel.")
+    ap.add_argument("--exclude", default="",
+                    help="drop these comparison stars from the automatic "
+                         "choice, e.g. C1,C5. Never takes a working ensemble "
+                         "below four stars.")
     ap.add_argument("--no_ring_fix", dest="ring_fix", action="store_false",
                     help="leave the sky ring alone even when a star falls "
                          "inside it")
@@ -4416,6 +4465,10 @@ def main():
                        k_ann_out=kout_use, gain=args.gain, ron=args.ron,
                        dark=args.dark, centroid_box=8, known_mags={},
                        per_frame_fwhm=args.per_frame_fwhm, fwhm_box=15,
+                       manual_comps=[c.strip() for c in (args.comps or "").split(",")
+                                     if c.strip()],
+                       exclude_comps=[c.strip() for c in (args.exclude or "").split(",")
+                                      if c.strip()],
                        **pair_cfg)
 
             # The observer's corrections, applied last so they win over
@@ -4466,6 +4519,19 @@ def main():
             tmin_arr = df_w["elapsed_min"].to_numpy(float)
 
             noise = noise_mmag(df_w, cfg_w.get("final_comps", []), segs)
+            miss = cfg_w.get("manual_missing") or []
+            if miss:
+                print(f"    ! {', '.join(miss)} were not measured in {cname} "
+                      f"- this channel keeps {len(cfg_w.get('final_comps', []))}")
+            if cfg_w.get("manual_refused") is not None:
+                print(f"    ! --exclude would leave "
+                      f"{cfg_w['manual_refused']} star(s) in {cname}; ignored")
+            if cfg_w.get("manual_comps"):
+                note_src = ((note_src + "; ") if note_src else "") + (
+                    "comparison stars chosen by hand: "
+                    + ", ".join(cfg_w.get("final_comps", []))
+                    + (f" ({', '.join(miss)} not measured in this channel)"
+                       if miss else ""))
 
             # The four things actually looked at - the light curve, the
             # spreadsheet, the star chart and the summary - sit at the top of
