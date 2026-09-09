@@ -1534,6 +1534,99 @@ def recompute_ensemble(df, target_name, comp_names, comp_weights=None):
     return df
 
 
+def offer_recomparison(df, config, args):
+    """Show what every comparison star did, then offer to choose again.
+
+    The same question the other two scripts ask, in the shape this one needs.
+    There is no folder of previous measurements to read here: the run has just
+    finished and the measurements are in hand, so the choice is offered while
+    they are, and everything written afterwards - the spreadsheet, the light
+    curve, the plots - comes out of whatever is chosen.
+
+    Two numbers decide an ensemble, and neither was ever written down. How
+    bright each comparison star is relative to the target says whether it
+    saturates the way the target does; the frame-to-frame scatter of
+    (target - star) says whether it actually held still. Which of the two
+    matters depends on the night: on a saturated Kinneret colour run the
+    matched-brightness stars are the quiet ones, and on an unsaturated LCO run
+    the brightest star is the quietest, as photon noise alone would have it.
+    The table shows the situation instead of giving advice.
+    """
+    tname = config.get("target_name", "V")
+    comps = [c for c in config.get("chosen_comps", []) if f"{c}_flux" in df]
+    if len(comps) < 2 or f"{tname}_flux" not in df:
+        return df, config
+    fv = df[f"{tname}_flux"].to_numpy(float)
+
+    rel, sc = {}, {}
+    for c in comps:
+        fc = df[f"{c}_flux"].to_numpy(float)
+        rel[c] = float(np.nanmedian(fc) / np.nanmedian(fv))
+        with np.errstate(invalid="ignore", divide="ignore"):
+            sc[c] = _p2p_noise(-2.5 * np.log10(fv / fc))
+
+    final = list(config.get("final_comps", comps))
+    lines = ["  name   brightness   scatter   in the ensemble"]
+    for c in comps:
+        v = sc.get(c, float("nan"))
+        lines.append("  %-5s   %6.2fx   %6s    %s%s"
+                     % (c, rel[c],
+                        ("%.0f" % (1000 * v)) if np.isfinite(v) else "-",
+                        "yes" if c in final else "no",
+                        "   <- close to the target" if rel[c] <= 1.25 else ""))
+    lines += ["",
+              "  brightness is this star's flux divided by the target's.",
+              "  A star much brighter than the target may be saturated, and a",
+              "  saturated comparison star adds noise instead of removing it.",
+              "  scatter (mmag) is the frame-to-frame scatter of (target - star):",
+              "  it is what that star would contribute as noise. Smaller is better."]
+    print("\n  Comparison stars")
+    for ln in lines:
+        print("  " + ln)
+
+    out_dir = getattr(args, "output_dir", None) or "."
+    try:
+        with open(os.path.join(out_dir, "comparison_stars.txt"), "w",
+                  encoding="utf-8") as f:
+            f.write("Comparison stars - %s\n" % tname)
+            f.write("=" * 70 + "\n\n" + "\n".join(lines) + "\n")
+    except Exception:
+        pass
+
+    want = [c.strip() for c in (getattr(args, "comps", None) or "").split(",")
+            if c.strip()]
+    while not want and not getattr(args, "no_ask_comps", False):
+        try:
+            raw = input("  Which comparison stars? (names separated by commas, "
+                        "or Enter to keep the choice above): ").strip()
+        except EOFError:
+            return df, config
+        if raw == "":
+            return df, config
+        cand = [w.strip().upper() for w in raw.replace(";", ",").split(",") if w.strip()]
+        bad = [w for w in cand if w not in comps]
+        if bad:
+            print("     no such star: %s  - the names are %s"
+                  % (", ".join(bad), ", ".join(comps)))
+            continue
+        if len(cand) < 2:
+            print("     at least two comparison stars are needed")
+            continue
+        want = cand
+    want = [c for c in want if c in comps]
+    if len(want) < 2 or want == final:
+        return df, config
+
+    w = {c: 1.0 / sc[c] ** 2 for c in want
+         if np.isfinite(sc.get(c, np.nan)) and sc[c] > 0}
+    df = recompute_ensemble(df, tname, want, comp_weights=w or None)
+    config = dict(config)
+    config["final_comps"] = list(want)
+    config["manual_comps"] = True
+    print("  -> ensemble set by hand: %s" % ", ".join(want))
+    return df, config
+
+
 def process_all(input_dir, ref_file, star_list_path, args):
     ref_data, ref_header = read_fits_data(ref_file)
 
@@ -2033,6 +2126,11 @@ def main():
                     help="leave the sky ring alone even when a star falls "
                          "inside it")
     ap.set_defaults(ring_fix=True)
+    ap.add_argument("--comps", default=None,
+                    help="use exactly these comparison stars, e.g. C3,C7,C9 - "
+                         "skips the question asked after the measurement")
+    ap.add_argument("--no_ask_comps", action="store_true",
+                    help="do not ask which comparison stars to use")
     ap.add_argument("--no_pair_cap", dest="pair_cap", action="store_false",
                     help="do not look for a companion too close for a star "
                          "finder to split, and do not cap the aperture on one")
@@ -2171,6 +2269,8 @@ def main():
           f"for the noise model.")
 
     df, config = process_all(args.input_dir, args.ref_file, args.star_list, args)
+
+    df, config = offer_recomparison(df, config, args)
 
     write_outputs(df, config, args.output, args.output_format.split(","))
 
