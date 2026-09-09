@@ -2772,9 +2772,18 @@ def comp_star_table(out_root):
     ch0 = "G" if "G" in tables else sorted(tables)[0]
     names = [c[:-5] for c in tables[ch0].columns if c.endswith("_flux")]
     tname = "V" if "V" in names else names[0]
-    all_comps = sorted([n for n in names if n != tname],
-                       key=lambda z: int(z[1:]) if z[1:].isdigit() else 0)
     chans = sorted(tables)
+
+    # The union across channels, not one channel's list. Each channel measures
+    # its own twelve and the union runs larger - on V1111 Cep the names reach
+    # C23 - so building the table from the green list alone hid eleven stars
+    # and made them unchoosable: the check below would have called them "no
+    # such star".
+    seen = set()
+    for ch in chans:
+        seen |= {c[:-5] for c in tables[ch].columns if c.endswith("_flux")}
+    all_comps = sorted([n for n in seen if n != tname],
+                       key=lambda z: int(z[1:]) if z[1:].isdigit() else 0)
 
     stats, rel_of = {}, {}
     for c in all_comps:
@@ -2786,7 +2795,8 @@ def comp_star_table(out_root):
             fc = df[f"{c}_flux"].to_numpy(float)
             m = -2.5 * np.log10(fv / fc)
             stats.setdefault(ch, {})[c] = _p2p_noise(m)
-            if ch == ch0:
+            # brightness from whichever channel has the star, green first
+            if c not in rel_of or ch == ch0:
                 rel_of[c] = float(np.nanmedian(fc) / np.nanmedian(fv))
 
     lines = ["  name   brightness   " +
