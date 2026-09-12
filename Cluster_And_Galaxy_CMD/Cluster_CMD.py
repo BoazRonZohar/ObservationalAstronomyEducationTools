@@ -906,14 +906,36 @@ def open_cluster_from_dias(name):
 
 
 def pixel_scale_of(path):
-    """Arcseconds per pixel, from the plate solution, or None."""
+    """Arcseconds per pixel, from the plate solution, or None.
+
+    WHY THE DETERMINANT AND NOT THE DIAGONAL
+    The CD matrix carries the scale and the rotation together. When north is up
+    the scale sits on its diagonal, and reading the diagonal is right. When the
+    frame is rotated the scale moves off the diagonal, and what is left there is
+    whatever the rotation happened to leave behind.
+
+    On a 2023 M67 frame, rotated by about ninety degrees, the diagonal gave 0.096
+    arcsec per pixel where the true scale is 1.25 - wrong by a factor of thirteen.
+
+    The area of one pixel on the sky is the determinant of the matrix whatever
+    the rotation, because a rotation does not change area. Its square root is the
+    scale, and it is right for every frame from every telescope without the code
+    needing to know which telescope that was.
+    """
     try:
         head = fits.getheader(path)
-        if head.get("PIXSCALE"):
-            return float(head["PIXSCALE"])
         wcs = WCS(head)
         if wcs.has_celestial:
-            return 3600.0 * float(np.mean(np.abs(wcs.pixel_scale_matrix.diagonal())))
+            area = abs(float(np.linalg.det(wcs.pixel_scale_matrix)))
+            if area > 0:
+                return 3600.0 * float(np.sqrt(area))
+        # No plate solution at all. Some capture software writes the focal length
+        # and the physical pixel size instead, and the scale follows from those.
+        if head.get("PIXSCALE"):
+            return float(head["PIXSCALE"])
+        focal, pixel_um = head.get("FOCALLEN"), head.get("XPIXSZ")
+        if focal and pixel_um:
+            return 206.265 * float(pixel_um) / float(focal)
     except Exception:
         pass
     return None
