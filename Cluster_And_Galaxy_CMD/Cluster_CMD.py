@@ -371,6 +371,126 @@ def run_photometry(filename, band):
     df = pd.DataFrame(rows, columns=["X", "Y", "FWHM", "Aperture_Radius", f"Flux_{band}"])
     return df
 
+
+# ------------------- Sources that cannot be measured cleanly -------------------
+
+# How far a source's width may sit from the frame's typical width before it is
+# not a single star. A star's width does vary a little across a field - it grows
+# towards the corners - but not by a factor of two, so anything outside these
+# bounds is something else: two stars the detector did not separate, or a cosmic
+# ray, which is narrower than the optics can make anything.
+WIDTH_MIN_FACTOR = 0.5
+WIDTH_MAX_FACTOR = 2.0
+
+
+def crowded_or_misshapen(df, quiet=False):
+    """Which sources can be measured cleanly. Returns a mask of the good ones.
+
+    WHY THIS IS HERE
+    Aperture photometry sums the light in a circle. That is exact for a star with
+    nothing near it and meaningless for two stars sharing the circle, because the
+    sum is then both of them and there is no way to tell how much belongs to
+    which. Nothing downstream can notice: the flux is a perfectly ordinary
+    number, it becomes a perfectly ordinary magnitude, and it lands in the diagram
+    next to the real stars.
+
+    Measured on an M12 frame, where the centre is crowded: source widths ran from
+    2.2 to 13.9 pixels around a typical 6.3, and the colour spread that came out
+    of it ran from -3 to +5, where a globular cluster spans about -0.2 to +1.5.
+    The structure a colour-magnitude diagram is drawn for had disappeared into it.
+
+    Two tests, because each catches what the other misses.
+
+    THE WIDTH TEST catches a blend the detector reported as one source: two stars
+    close enough to merge are measured as one object about twice as wide. It also
+    catches the opposite - a cosmic ray or a hot pixel, narrower than the optics
+    can make any real source.
+
+    THE NEIGHBOUR TEST catches a blend the detector did separate. Two stars ten
+    pixels apart can each be measured at a normal width, and each one's aperture
+    still swallows the other, because the aperture is drawn from the width and is
+    wider than the gap. This looks at the actual distance to the nearest source
+    rather than at the shape.
+
+    Neither test repairs anything. A source that fails is dropped, which loses
+    the crowded centre of a globular and leaves what remains trustworthy.
+    """
+    if df is None or not len(df) or "FWHM" not in df.columns:
+        return None
+
+    n_start = len(df)
+    width = df["FWHM"].to_numpy(dtype=float)
+    typical = float(np.nanmedian(width))
+    if not np.isfinite(typical) or typical <= 0:
+        return None
+
+    too_narrow = width < WIDTH_MIN_FACTOR * typical
+    too_wide = width > WIDTH_MAX_FACTOR * typical
+
+    # The nearest other source, from the same list. cKDTree is asked for the two
+    # closest neighbours because the closest one is always the source itself.
+    xy = df[["X", "Y"]].to_numpy(dtype=float)
+    crowded = np.zeros(n_start, dtype=bool)
+    if n_start > 1 and "Aperture_Radius" in df.columns:
+        distance, _ = cKDTree(xy).query(xy, k=2)
+        crowded = distance[:, 1] < df["Aperture_Radius"].to_numpy(dtype=float)
+
+    keep = ~(too_narrow | too_wide | crowded)
+    if not quiet:
+        print(f"   typical source width: {typical:.1f} px", flush=True)
+        print(f"   {int(too_wide.sum()):,} too wide to be one star, "
+              f"{int(too_narrow.sum()):,} too narrow to be a star at all, "
+              f"{int(crowded.sum()):,} with another source inside their aperture",
+              flush=True)
+        print(f"   {int(keep.sum()):,} of {n_start:,} survive all three",
+              flush=True)
+    return keep
+
+
+def write_cmd(subset, plot_path, name, what, distance, ebv, av):
+    """One colour-magnitude diagram, drawn and saved.
+
+    The heading is the file's own name. A figure copied into a document or
+    printed out is then still traceable to the file it came from, and two
+    figures that differ only in scope or in filter cannot be mistaken for each
+    other, because the words that separate them are the same words in both
+    places. The cluster and the numbers used sit on the second line.
+    """
+    plt.figure()
+    plt.scatter(subset["Color_index_corr"], subset["Mag_V_corr_copy"],
+                s=10, color="black")
+    plt.gca().invert_yaxis()          # brighter = up
+    plt.xlim(0, 2)                    # the cluster sequence sits in here; a few
+                                      # stray points far outside it should not
+                                      # squeeze the real spread down to nothing
+    plt.xlabel("Color index (B−V)")
+    plt.ylabel("V magnitude (corrected)")
+    stem = os.path.splitext(os.path.basename(plot_path))[0]
+    plt.title(f"{stem}\n"
+              f"{name}    d = {distance:,.0f} pc    "
+              f"E(B−V) = {ebv:.3f}    A_V = {av:.2f}", fontsize=11)
+    plt.savefig(plot_path, dpi=150)
+    plt.show()
+
+
+def write_star_overlay(image, vmin, vmax, subset, plot_path, name, what):
+    """The frame with a circle on every source in this subset.
+
+    The companion to the diagram above. Two of them side by side answer the
+    question the diagram alone cannot: where in the sky the sources that were set
+    aside actually were. If they are the crowded centre, it is visible at once.
+    """
+    plt.figure(figsize=(8, 8))
+    plt.imshow(image, cmap="gray", origin="lower", vmin=vmin, vmax=vmax)
+    plt.scatter(subset["X"], subset["Y"], s=30, edgecolor="red",
+                facecolor="none", lw=1)
+    stem = os.path.splitext(os.path.basename(plot_path))[0]
+    plt.title(f"{stem}\n{name}", fontsize=11)
+    plt.xlabel("X [pix]")
+    plt.ylabel("Y [pix]")
+    plt.savefig(plot_path, dpi=150)
+    plt.show()
+
 # ------------------- Calibration stars from APASS -------------------
 
 
@@ -621,44 +741,268 @@ def register_B_onto_G(B_img, G_img, xB, yB, fits_file_B, fits_file_G):
         return wcs_G.all_world2pix(ra_B, dec_B, 0)
 
 
+# ------------------- Reading a folder instead of asking -------------------
+
+def frames_in_folder(folder):
+    """Which file in this folder is B and which is V, read from the headers.
+
+    WHY NOT ASK
+    The filter is written into every frame the telescope produces. Asking a
+    person to type it invites the one mistake that cannot be caught later: two
+    paths swapped, and every colour in the diagram comes out with its sign
+    reversed while the run looks perfectly normal throughout.
+
+    Returns (b_path, v_path, object_name). Anything it cannot work out comes
+    back as None and is asked for in the usual way.
+    """
+    import glob as _glob
+
+    found = {}
+    names = []
+    for pattern in ("*.fits", "*.fit", "*.fts"):
+        for path in sorted(_glob.glob(os.path.join(folder, pattern))):
+            try:
+                head = fits.getheader(path)
+            except Exception:
+                continue
+            filt = str(head.get("FILTER", "")).strip().upper()
+            if not filt:
+                # No FILTER keyword: fall back to the file name, which is how
+                # frames combined by other software usually carry it.
+                stem = os.path.basename(path).upper()
+                if "_B" in stem or " B" in stem:
+                    filt = "B"
+                elif "_V" in stem or " V" in stem:
+                    filt = "V"
+                elif "_G" in stem or " G" in stem:
+                    filt = "G"
+            if head.get("OBJECT"):
+                names.append(str(head["OBJECT"]).strip())
+            key = None
+            if filt.startswith("B"):
+                key = "B"
+            elif filt.startswith("V") or filt.startswith("G"):
+                key = "V"
+            if key:
+                found.setdefault(key, []).append(path)
+
+    name = None
+    if names:
+        name = max(set(names), key=names.count)
+    return found, name
+
+
+def describe_choice(found):
+    """Say which frame was taken for each filter, and what else was there.
+
+    WHY THE REST ARE NAMED
+    Because a folder often holds more than one frame of a filter and only one of
+    them is used. The M13 folder here holds three in B: two single exposures from
+    2023 and one combined frame from 2025. Taking the first in alphabetical order
+    means taking a single 2023 exposure and leaving the deeper combined one
+    unused - which is a reasonable thing to do by accident once, and not a
+    reasonable thing to do twenty times without noticing.
+
+    Nothing is chosen differently here. The others are simply named, so that the
+    choice can be seen and the folder tidied if it was the wrong one.
+    """
+    import os as _os
+
+    chosen = {}
+    for key in ("B", "V"):
+        paths = found.get(key, [])
+        if not paths:
+            print("   {}: not found in the folder".format(key))
+            chosen[key] = None
+            continue
+        chosen[key] = paths[0]
+        print("   {}: {}".format(key, _os.path.basename(paths[0])))
+        if len(paths) > 1:
+            others = ", ".join(_os.path.basename(p) for p in paths[1:])
+            print("      {} more in this filter, not used: {}".format(
+                len(paths) - 1, others))
+    return chosen["B"], chosen["V"]
+
+
+def cluster_type_from_simbad(name):
+    """Open or globular, from the object type SIMBAD publishes. 'O', 'G' or None.
+
+    This is a fact about the cluster, not a judgement: SIMBAD returns OpC for an
+    open cluster and GlC for a globular. Asking for it is asking the person to
+    repeat what the catalogue already knows.
+    """
+    try:
+        from astroquery.simbad import Simbad
+
+        query = Simbad()
+        query.add_votable_fields("otype")
+        result = query.query_object(name)
+        if result is None or not len(result):
+            return None
+        otype = str(result["otype"][0]).strip()
+        if "GlC" in otype:
+            return "G"
+        if "OpC" in otype or otype == "Cl*":
+            return "O"
+    except Exception as exc:
+        print(f"[lookup] SIMBAD unavailable ({exc})", flush=True)
+    return None
+
+
+def globular_from_harris(name):
+    """Distance in pc, E(B-V) and half-light radius for a globular.
+
+    Harris (1996, 2010 edition) is the standard compilation for the Milky Way's
+    globulars: 147 of them, a distance for 145 and a reddening for every one.
+    That is essentially every globular a telescope on the ground can reach.
+    """
+    try:
+        tables = Vizier(columns=["**"]).query_object(name, catalog="VII/202")
+        if not tables:
+            return None, None, None
+        distance = ebv = half_light = None
+        for table in tables:
+            row = table[0]
+            if distance is None and "Rsun" in table.colnames:
+                distance = float(row["Rsun"]) * 1000.0
+            if ebv is None and "E(B-V)" in table.colnames:
+                ebv = float(row["E(B-V)"])
+            if half_light is None and "Rh" in table.colnames:
+                half_light = float(row["Rh"])
+        return distance, ebv, half_light
+    except Exception as exc:
+        print(f"[lookup] Harris catalogue unavailable ({exc})", flush=True)
+        return None, None, None
+
+
+def open_cluster_from_dias(name):
+    """Distance in pc, E(B-V) and diameter for an open cluster.
+
+    WHY NOT THE DUST MAPS
+    Because they answer a different question. IRSA gives the extinction through
+    the whole Galaxy in a direction, which is right for something seen behind all
+    of it and wrong for a cluster sitting inside it. On M67 and M12 the
+    full-line-of-sight value came out 20-30 percent below the published cluster
+    values.
+
+    Dias et al. is a compilation from the literature rather than one uniform
+    measurement, and its numbers do not always agree with catalogues built from
+    Gaia alone: for M67 it gives 808 pc where Cantat-Gaudin gives 859. That is
+    why what it returns is put on the screen before it is used.
+    """
+    try:
+        tables = Vizier(columns=["**"]).query_object(name, catalog="B/ocl")
+        if not tables:
+            return None, None, None
+        table = tables[0]
+        row = table[0]
+        distance = float(row["Dist"]) if "Dist" in table.colnames else None
+        ebv = float(row["E(B-V)"]) if "E(B-V)" in table.colnames else None
+        diameter = float(row["Diam"]) if "Diam" in table.colnames else None
+        return distance, ebv, diameter
+    except Exception as exc:
+        print(f"[lookup] Dias catalogue unavailable ({exc})", flush=True)
+        return None, None, None
+
+
+def pixel_scale_of(path):
+    """Arcseconds per pixel, from the plate solution, or None."""
+    try:
+        head = fits.getheader(path)
+        if head.get("PIXSCALE"):
+            return float(head["PIXSCALE"])
+        wcs = WCS(head)
+        if wcs.has_celestial:
+            return 3600.0 * float(np.mean(np.abs(wcs.pixel_scale_matrix.diagonal())))
+    except Exception:
+        pass
+    return None
+
+
+def offered(label, value, source, unit=""):
+    """Show a looked-up number and let it be overridden, or ask when there is none.
+
+    Every number that goes into the diagram is printed with where it came from
+    before it is used. A distance and a reddening set the whole vertical scale of
+    a colour-magnitude diagram, and a wrong one moves every star together - which
+    is exactly the kind of error that looks like a result.
+    """
+    if value is None:
+        print(f"   {label}: not found in the catalogue")
+        return float(input(f"   enter {label}{unit}: "))
+    typed = input(
+        f"   {label} = {value:g}{unit}  ({source})  [Enter to accept]: ").strip()
+    return float(typed) if typed else float(value)
+
+
 # ------------------- Run -------------------
-print("=== Cluster Photometry Interactive Input ===") 
-cluster_type = _ask("Cluster type [O=open, G=globular]", "O", str, upper=True)
+print("=== Cluster Photometry Interactive Input ===")
+
+folder = _norm_path(_ask(
+    "Path to the folder holding the frames (Enter to name the two files instead)",
+    "", str))
+
+fits_file_B = fits_file_G = None
+cluster_name = None
+if folder and os.path.isdir(folder):
+    _found, object_name = frames_in_folder(folder)
+    fits_file_B, fits_file_G = describe_choice(_found)
+    if object_name:
+        cluster_name = object_name
+        print(f"   cluster: {cluster_name}   (from the OBJECT keyword)")
+elif folder:
+    print(f"[input] there is no folder at {folder} - naming the two files instead")
+
+if cluster_name is None:
+    cluster_name = _ask("Cluster name", "M13", str)
+
+cluster_type = cluster_type_from_simbad(cluster_name)
+if cluster_type:
+    kind = "globular" if cluster_type == "G" else "open"
+    print(f"   type: {kind}   (SIMBAD)")
+else:
+    cluster_type = _ask("Cluster type [O=open, G=globular]", "O", str, upper=True)
+
+print("Looking the cluster up...", flush=True)
+if cluster_type == "G":
+    _dist, _ebv, _size = globular_from_harris(cluster_name)
+    _source = "Harris catalogue"
+else:
+    _dist, _ebv, _size = open_cluster_from_dias(cluster_name)
+    _source = "Dias catalogue"
+
+Cluster_distance = offered("distance", _dist, _source, " pc")
+E_BV = offered("E(B-V)", _ebv, _source)
 
 if cluster_type == "G":
-    # For globular clusters: ask raw name and radius
-    cluster_name = _ask("Cluster name", "M13", str)
+    # The radius is still asked for. What the catalogue publishes is the
+    # half-light radius, which by definition holds half the cluster's light and
+    # is therefore too small to select its members; the tidal radius would be the
+    # right quantity and is not in this table. The catalogue value is shown as a
+    # yardstick - a globular usually reaches several times it - and the choice
+    # stays with the person making it, because it decides which stars are members.
+    _scale = pixel_scale_of(fits_file_G or fits_file_B or "")
+    if _size and _scale:
+        print(f"   for scale: the half-light radius is {_size:g} arcmin"
+              f" = {_size * 60.0 / _scale:.0f} px in this frame;"
+              f" a globular usually reaches several times that")
     Cluster_radius_px = float(input("Enter cluster radius in pixels (EXP: 200): "))
-
 else:
-    # For open clusters: ask name and normalize
-    raw_name = _ask("Cluster name", "NGC_2682", str)
     try:
-        cluster_name = normalize_cluster_name(raw_name)
+        cluster_name = normalize_cluster_name(cluster_name)
     except RuntimeError as e:
         print(e)
         exit(1)
     Cluster_radius_px = None
 
-        
-Cluster_distance = float(input("Enter Cluster Distance (PC): (EXP: 850) "))
-# Only the colour excess is asked for. A_V is not independent of it - it is
-# R_V x E(B-V) - so asking for both lets a pair through that cannot both be
-# true, with nothing to catch it. The pair this script used to suggest as an
-# example, A_V 0.13 with E(B-V) 0.041, implies R_V = 3.17, close enough to the
-# standard 3.1 that the difference never showed; a typo in either box would
-# not have been noticed at all.
-#
-# Unlike Galaxy_CMD.py, this value is not offered from the IRSA dust maps.
-# Those give the extinction through the whole Galaxy in a given direction,
-# which is the right quantity for a galaxy seen behind all of it, but not for
-# a cluster sitting inside it. On M67 and M12 the full-line-of-sight value
-# came out 20-30% below the published cluster values.
-E_BV = float(input("Enter Galactic color excess E(B-V): (EXP: 0.041) "))
 A_V = R_V * E_BV
-print(f"Using E(B-V) = {E_BV}, A_V = R_V x E(B-V) = {A_V:.3f}")
-fits_file_B      = _ask("Path to B-band FITS image", r"D:\example_B.fts", str)
-fits_file_G      = _ask("Path to V (or G) band FITS image", r"D:\example_G.fts", str)
+print(f"Using distance {Cluster_distance:g} pc, E(B-V) = {E_BV}, "
+      f"A_V = R_V x E(B-V) = {A_V:.3f}")
+
+if fits_file_B is None:
+    fits_file_B = _ask("Path to B-band FITS image", "D:/example_B.fts", str)
+if fits_file_G is None:
+    fits_file_G = _ask("Path to V (or G) band FITS image", "D:/example_G.fts", str)
 fits_file_B = _norm_path(fits_file_B)
 fits_file_G = _norm_path(fits_file_G)
 
@@ -1006,26 +1350,35 @@ try:
                 df.to_csv(fpath, index=False)
                 print(f"[color_index] updated {fname} with new columns")
 
-                # make CMD plot
-                
-                plt.figure()
-                plt.scatter(df["Color_index_corr"], df["Mag_V_corr_copy"], s=10, color="black")
-                plt.gca().invert_yaxis()  # brighter = up
-                plt.xlim(0, 2)  # the cluster sequence sits in here; a few
-                                # stray points far outside it should not
-                                # squeeze the real spread down to nothing
-                plt.xlabel("Color index (B−V)")
-                plt.ylabel("V magnitude (corrected)")
-                plt.title(f"{cluster_name}, d={Cluster_distance} pc, A_V={A_V}, E(B−V)={E_BV}")
+                # Two diagrams from the same table: everything that was
+                # measured, and what is left once sources with a neighbour
+                # inside their own aperture are set aside.
+                #
+                # The names say which is which. "fluxes_cluster_only_galactic"
+                # described where the numbers came from, which matters to nobody
+                # opening the folder a year later; scope, filter and count are
+                # what actually distinguish one picture from another.
+                scope = ("cluster_sources" if "cluster_only" in fname
+                         else "whole_frame_sources")
+                keep_mask = crowded_or_misshapen(df)
+                versions = [("all", df)]
+                if keep_mask is not None and keep_mask.any() and not keep_mask.all():
+                    versions.append(("no_overlap", df.loc[keep_mask]))
+                    clean_csv = os.path.join(
+                        _outdir, f"{scope}_no_overlap_{int(keep_mask.sum())}.csv")
+                    df.loc[keep_mask].to_csv(clean_csv, index=False)
+                    print(f"[color_index] wrote {os.path.basename(clean_csv)}")
 
-                # save and show plot
-                plot_path = fpath.replace(".csv", "_CMD.png")
-                plt.savefig(plot_path, dpi=150)
-                #plt.savefig(plot_path, dpi=150)
-                plt.show()
-                #plt.close()
-
-                print(f"[color_index] saved CMD plot to {plot_path}")
+                for kind, subset in versions:
+                    where = ("cluster sources" if scope == "cluster_sources"
+                             else "whole frame")
+                    what = (f"{where}, all" if kind == "all"
+                            else f"{where}, no overlap")
+                    plot_path = os.path.join(
+                        _outdir, f"CMD_{scope}_{kind}_{len(subset)}.png")
+                    write_cmd(subset, plot_path, cluster_name, what,
+                              Cluster_distance, E_BV, A_V)
+                    print(f"[color_index] saved CMD plot to {plot_path}")
             else:
                 print(f"[color_index] {fname} missing Mag_B_corr or Mag_V_corr columns")
         else:
@@ -1049,22 +1402,19 @@ try:
     if os.path.exists(flux_csv):
         df_flux = pd.read_csv(flux_csv)
 
-        plt.figure(figsize=(8,8))
-        plt.imshow(data_G, cmap="gray", origin="lower", vmin=vmin, vmax=vmax)
+        keep_mask = crowded_or_misshapen(df_flux, quiet=True)
+        maps = [("all", df_flux)]
+        if keep_mask is not None and keep_mask.any() and not keep_mask.all():
+            maps.append(("no_overlap", df_flux.loc[keep_mask]))
 
-        # overlay measured stars
-        plt.scatter(df_flux["X"], df_flux["Y"], 
-                    s=30, edgecolor="red", facecolor="none", lw=1)
-
-        plt.title(f"{cluster_name} - measured stars")
-        plt.xlabel("X [pix]")
-        plt.ylabel("Y [pix]")
-
-        out_img_path = os.path.join(_outdir, "cluster_with_stars.png")
-        plt.savefig(out_img_path, dpi=150)
-        plt.show()
-
-        print(f"[plot] wrote {out_img_path}")
+        for kind, subset in maps:
+            what = ("cluster sources, all" if kind == "all"
+                    else "cluster sources, no overlap")
+            out_img_path = os.path.join(
+                _outdir, f"map_cluster_sources_{kind}_{len(subset)}.png")
+            write_star_overlay(data_G, vmin, vmax, subset, out_img_path,
+                               cluster_name, what)
+            print(f"[plot] wrote {out_img_path}")
     else:
         print("[plot] flux file not found, skipping star overlay plot")
 
