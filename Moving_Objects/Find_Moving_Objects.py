@@ -104,6 +104,7 @@ import os
 import re
 import sys
 import glob
+import time
 import argparse
 import warnings
 
@@ -461,7 +462,19 @@ def triples(det, hours, n_frames, psf_px, max_rate_px_h, mid_tol=2.0,
     span_all = t1 - t0
     max_move = max_rate_px_h * span_all
     by_frame_pts = {k: det[det[:, 0] == k] for k in by_frame}
+    # This loop is where a crowded field spends its minutes, and it used to
+    # spend them in silence: the only line it printed came after it had
+    # finished, so there was no way to tell a long job from a hung one. The
+    # count is written over itself every few hundred detections.
+    step = max(1, len(early) // 200)
+    t_start = time.time()
     for ai in range(len(early)):
+        if verbose and ai % step == 0 and ai:
+            done = ai / len(early)
+            left_s = (time.time() - t_start) * (1 - done) / max(done, 1e-9)
+            print(f"\r    {ai}/{len(early)} detections followed, "
+                  f"{len(out)} lines so far, about {left_s:.0f} s left   ",
+                  end="", flush=True)
         ka = int(early[ai, 0]); ax, ay = early[ai, 1], early[ai, 2]
         ta = hours[ka]
         for kc, tree_c in by_frame.items():
@@ -503,8 +516,8 @@ def triples(det, hours, n_frames, psf_px, max_rate_px_h, mid_tol=2.0,
                 if seen >= need:
                     out.append((vx, vy, ax, ay, ta, seen + 2))
     if verbose:
-        print(f"    {len(out)} lines that at least {need + 2} of "
-              f"{len(probe)} sampled epochs agree on")
+        print(f"\r    {len(out)} lines that at least {need + 2} of "
+              f"{len(probe)} sampled epochs agree on" + " " * 30)
     return out
 
 
@@ -781,12 +794,17 @@ def quick_look(paths, idx, args, stem=None, px_scale=1.0, verbose_depth=True):
         counts = [int((det[:, 0] == k).sum()) for k in range(len(mjds))]
         if verbose_depth:
             print(f" [{len(mjds)} frames searched: "
-                  f"{min(counts)}-{max(counts)} sources each]", end="")
+                  f"{min(counts)}-{max(counts)} sources each]")
+        # The search says what it is doing here too. A quick look used to run
+        # it silently, so a crowded field went several minutes with nothing on
+        # the screen and no way to tell a long job from a hung one - and when
+        # it ended in NOT FOUND there was no way to tell "looked and it is not
+        # there" from "nothing was left to look at".
         objs = search_prepared(frames, mjds, det,
                                psf_px=args.psf_px, min_snr=args.min_snr,
                                min_significance=args.min_significance,
                                max_wander=args.max_wander, px_scale=px_scale,
-                               max_rate_arcsec_h=args.max_rate, verbose=False,
+                               max_rate_arcsec_h=args.max_rate, verbose=True,
                                max_per_frame=args.max_per_frame)
         hrs = hours_of(mjds)
         # The pictures are drawn HERE, while the frames still exist. A quick
@@ -836,7 +854,7 @@ def quick_session(paths, args, px_scale, out_stem):
             print(f" {e}")
             return
         span = hours[-1] - hours[0]
-        print(f" {span * 60:.0f} minutes apart")
+        print(f"  {span * 60:.0f} minutes apart")
         names = []
         if objs:
             print(f"  FOUND {len(objs)} thing(s) that moved:")
@@ -972,8 +990,14 @@ def search_prepared(frames, mjds, det, psf_px=3.2, min_snr=8.0,
     cands = triples(left, hours, len(frames), psf_px,
                     max_rate_px_h=max_rate_px_h, verbose=verbose)
 
+    # The second place the run goes quiet: every candidate line has the frames
+    # added up along it, and there can be tens of thousands of them.
     seen, hits = set(), []
-    for vx, vy, x0, y0, t0, nep in cands:
+    c_step = max(1, len(cands) // 100)
+    for ci, (vx, vy, x0, y0, t0, nep) in enumerate(cands):
+        if verbose and ci % c_step == 0 and ci:
+            print(f"\r    {ci}/{len(cands)} lines stacked, "
+                  f"{len(hits)} strong enough   ", end="", flush=True)
         r = stack_along(frames, hours, vx, vy, x0, y0, t0)
         if r is None:
             continue
