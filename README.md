@@ -29,6 +29,8 @@ and the Python scripts run on your own machine, on your own files.
 | Frames with no plate solution — stacked in AIP4Win, WCS lost | `Photometry_Transit_Eclipse_Mono_Star_List.py` |
 | A night of frames and a suspicion something moved | `Find_Moving_Objects.py` |
 | Colour frames that need combining before anything else | `Stack_Color_Frames.py` |
+| B and V frames of a star cluster | `Cluster_CMD.py` |
+| B, V, R and H-alpha frames of a spiral galaxy | `Star_Formation_All_In_One.py` |
 
 ---
 
@@ -183,9 +185,25 @@ never into the folder your frames live in.
 | Tool | |
 |---|---|
 | `Cluster_CMD.py` | Photometry and colour-magnitude diagrams for open and globular clusters: calibration, extinction correction, membership selection. Cluster membership comes from Gaia astrometry, not from whatever happens to lie in the same direction. |
-| `Galaxy_CMD.py` | The same for galaxies, and the radial density profile of the blue knots — the young star-forming regions in the arms. |
-| `Open_Cluster_Name_Resolver.py` | Turns `M6` into `NGC_6405` — the name the catalogue actually uses. Run it before `Cluster_CMD.py`. |
+| `Galaxy_CMD.py` | The same for galaxies, and the radial density profile of the blue knots — the young star-forming regions in the arms. Kept for projects already built on it; for new work, see [Star formation in spiral galaxies](#star-formation-in-spiral-galaxies). |
+| `Open_Cluster_Name_Resolver.py` | Turns `M6` into `NGC_6405` — the name the catalogue actually uses. `Cluster_CMD.py` now does this itself; useful on its own when a name needs checking. |
 | `List_Catalogue_Clusters.py` | Prints every cluster name in the catalogue, for when a name is being rejected. |
+
+`Cluster_CMD.py` asks for a folder. The filter of each frame is read from its
+header, the cluster's name from `OBJECT`, whether it is open or globular from
+SIMBAD, and its distance and reddening from the Harris catalogue for globulars
+and the Dias catalogue for open clusters. Every number that is looked up is shown
+with the catalogue it came from before it is used, and can be overridden with a
+keystroke — a distance sets the whole vertical scale of the diagram, and a wrong
+one moves every star together.
+
+It draws each diagram twice. Aperture photometry is exact for a star on its own
+and meaningless for two stars sharing the circle, which is what the centre of a
+globular cluster is made of. So one diagram holds every measured source, and one
+leaves out those with another source inside their own aperture; a map of the
+frame beside each shows where the two differ. On M12 the second removes most of
+the core; on M67 it removes a handful. Which one to believe is a judgement about
+the cluster, and both are kept for it.
 
 Finding star-forming regions by their colour in ordinary broad-band images,
 and treating their distribution as a measurable property of the galaxy,
@@ -198,6 +216,45 @@ broad-band frames, B and V, are within reach of a school-accessible
 telescope, and the young regions separate out on colour alone — no
 spectroscopy, no narrow-band filter. A student with one night of data can ask
 where a galaxy is forming stars, and answer it with a number.
+
+---
+
+## Star formation in spiral galaxies
+
+In `Galaxy_Analysis/`. Two tracers of star formation, and the link between them:
+blue knots, which are young star clusters, and HII regions, the gas lit up around
+stars that have only just switched on. They mark the same event about ten million
+years apart, and the distance between a knot and the region it came from is the
+cluster's drift made visible.
+
+| Tool | |
+|---|---|
+| `Blue_Clusters_From_Images.py` | B and V frames → the blue knots, their colour-magnitude diagram, and their radial profile. |
+| `HII_From_Images.py` | R and H-alpha frames → the H-alpha frame with the continuum taken out, the HII regions in it, and their radial profile. |
+| `Star_Formation_All_In_One.py` | All four frames → both tracers on one grid, and the separation between each knot and its nearest region. |
+| `Compare_Clusters_And_Regions.py` | Two output folders already written by the first two tools → the same comparison, without the frames. |
+
+Each is one file that runs on its own. Given a folder, they read the filters from
+the headers, combine the exposures, and look up the galaxy's distance, reddening
+and geometry from published catalogues.
+
+Two things set these apart from the older `Galaxy_CMD.py`. Foreground stars are
+removed using Gaia parallaxes and proper motions rather than by shape: a cluster
+several megaparsecs away is unresolved and looks exactly like a star, so anything
+that removes star-shaped sources removes the clusters first. And the amount of
+continuum to subtract from H-alpha, together with how much to blur one frame to
+match the other, is chosen by looking: the tool writes three versions and asks
+which is best, because every automatic rule tried disagreed with the eye.
+
+The comparison tool works from finished results rather than frames, which makes
+it useful for re-examining old projects. Its two inputs come from separate runs on
+separate pixel grids, so it converts both catalogues to sky coordinates and
+measures the separation as an angle; nothing is resampled and neither grid is
+preferred.
+
+Radial profiles from all of them are drawn with and without a correction for the
+galaxy's tilt, each as its own figure, with the numbers behind every figure
+written beside it as a CSV.
 
 ---
 
