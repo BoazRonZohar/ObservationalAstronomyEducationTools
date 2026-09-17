@@ -180,12 +180,11 @@ never into the folder your frames live in.
 
 ---
 
-## Star clusters and galaxies
+## Star clusters
 
 | Tool | |
 |---|---|
 | `Cluster_CMD.py` | Photometry and colour-magnitude diagrams for open and globular clusters: calibration, extinction correction, membership selection. Cluster membership comes from Gaia astrometry, not from whatever happens to lie in the same direction. |
-| `Galaxy_CMD.py` | The same for galaxies, and the radial density profile of the blue knots — the young star-forming regions in the arms. Kept for projects already built on it; for new work, see [Star formation in spiral galaxies](#star-formation-in-spiral-galaxies). |
 | `Open_Cluster_Name_Resolver.py` | Turns `M6` into `NGC_6405` — the name the catalogue actually uses. `Cluster_CMD.py` now does this itself; useful on its own when a name needs checking. |
 | `List_Catalogue_Clusters.py` | Prints every cluster name in the catalogue, for when a name is being rejected. |
 
@@ -205,6 +204,16 @@ frame beside each shows where the two differ. On M12 the second removes most of
 the core; on M67 it removes a handful. Which one to believe is a judgement about
 the cluster, and both are kept for it.
 
+---
+
+## Star formation in spiral galaxies
+
+In `Galaxy_Analysis/`. Two tracers of star formation, and the link between them:
+blue knots, which are young star clusters, and HII regions, the gas lit up around
+stars that have only just switched on. They mark the same event about ten million
+years apart, and the distance between a knot and the region it came from is the
+cluster's drift made visible.
+
 Finding star-forming regions by their colour in ordinary broad-band images,
 and treating their distribution as a measurable property of the galaxy,
 follows Brosch, N. (1992), *Star formation systematics from colour images*,
@@ -217,16 +226,6 @@ telescope, and the young regions separate out on colour alone — no
 spectroscopy, no narrow-band filter. A student with one night of data can ask
 where a galaxy is forming stars, and answer it with a number.
 
----
-
-## Star formation in spiral galaxies
-
-In `Galaxy_Analysis/`. Two tracers of star formation, and the link between them:
-blue knots, which are young star clusters, and HII regions, the gas lit up around
-stars that have only just switched on. They mark the same event about ten million
-years apart, and the distance between a knot and the region it came from is the
-cluster's drift made visible.
-
 | Tool | |
 |---|---|
 | `Blue_Clusters_From_Images.py` | B and V frames → the blue knots, their colour-magnitude diagram, and their radial profile. |
@@ -238,7 +237,7 @@ Each is one file that runs on its own. Given a folder, they read the filters fro
 the headers, combine the exposures, and look up the galaxy's distance, reddening
 and geometry from published catalogues.
 
-Two things set these apart from the older `Galaxy_CMD.py`. Foreground stars are
+Two things are worth knowing about how they work. Foreground stars are
 removed using Gaia parallaxes and proper motions rather than by shape: a cluster
 several megaparsecs away is unresolved and looks exactly like a star, so anything
 that removes star-shaped sources removes the clusters first. And the amount of

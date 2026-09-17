@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Created by: Dr. Boaz Ron Zohar
-https://github.com/BoazRonZohar/ObservationalAstronomyEducationTools/blob/main/Cluster_And_Galaxy_CMD/Cluster_CMD.py
+https://github.com/BoazRonZohar/ObservationalAstronomyEducationTools/blob/main/Cluster_CMD/Cluster_CMD.py
 Affiliation: Kinneret Observatory
 Member of the LCO Global Sky Partners programme
 Date: September 2025

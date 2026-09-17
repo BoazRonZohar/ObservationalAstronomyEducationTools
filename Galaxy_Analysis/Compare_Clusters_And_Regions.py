@@ -2,7 +2,7 @@
 Compare_Clusters_And_Regions.py - the two tracers compared, from finished runs.
 
 WHAT IT IS FOR
-Star_Formation_Full_Analysis.py measures both tracers itself and compares them in
+Star_Formation_All_In_One.py measures both tracers itself and compares them in
 one pass. This does only the comparison, from output folders that already exist:
 one from Blue_Clusters_From_Images.py and one from HII_From_Images.py. No frames
 are read for measurement, nothing is detected, nothing is subtracted.
@@ -39,22 +39,6 @@ USAGE
     python Compare_Clusters_And_Regions.py --clusters DIR --regions DIR --out DIR
 """
 
-# ===========================================================================
-# GENERATED FILE - do not edit.
-#
-# Built by build.py on 2026-09-11 18:56 from:
-#   Compare_Clusters_And_Regions.py
-#   interactive_input.py
-#   deprojection.py
-#   galaxy_catalogue.py
-#   tracer_matching.py
-#   radial_profiles.py
-#
-# This file is standalone on purpose: it needs nothing else from the
-# project, only the usual third-party packages. The cost of that is this
-# warning - a fix made here is overwritten by the next build. Change the
-# source above instead, then run build.py again.
-# ===========================================================================
 
 
 from __future__ import annotations

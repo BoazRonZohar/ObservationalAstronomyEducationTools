@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Created by: Dr. Boaz Ron Zohar
-https://github.com/BoazRonZohar/ObservationalAstronomyEducationTools/blob/main/Cluster_And_Galaxy_CMD/Galaxy_CMD.py
+https://github.com/BoazRonZohar/ObservationalAstronomyEducationTools/blob/main/Galaxy_Analysis/Blue_Clusters_From_Images.py
 Affiliation: Kinneret Observatory
 Member of the LCO Global Sky Partners programme
 Date: September 2025
@@ -162,27 +162,6 @@ are the first things to look at.
 Usage: run it. Every question has a default; press Enter to accept it.
 """
 
-# ===========================================================================
-# GENERATED FILE - do not edit.
-#
-# Built by build.py on 2026-09-11 11:11 from:
-#   Blue_Clusters_From_Images.py
-#   interactive_input.py
-#   frame_inventory.py
-#   anchor_registration.py
-#   galaxy_window.py
-#   galaxy_extent.py
-#   deprojection.py
-#   galaxy_catalogue.py
-#   continuum_subtraction.py
-#   radial_profiles.py
-#   HII_From_Images.py  (image handling)
-#
-# This file is standalone on purpose: it needs nothing else from the
-# project, only the usual third-party packages. The cost of that is this
-# warning - a fix made here is overwritten by the next build. Change the
-# source above instead, then run build.py again.
-# ===========================================================================
 
 
 from __future__ import annotations

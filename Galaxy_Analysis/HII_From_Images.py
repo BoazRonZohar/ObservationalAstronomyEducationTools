@@ -33,7 +33,7 @@ That factor is not one number for the whole image - it depends on the colour of
 whatever is being measured. Treating it as a constant, which is all that two frames
 allow, biases the measured line strength: published tests put the error at up to 30
 percent when the factor is set from foreground stars and up to 40 percent when it
-is set from parts of the galaxy itself. Use Star_Formation_Full_Analysis.py when you also have
+is set from parts of the galaxy itself. Use Star_Formation_All_In_One.py when you also have
 B and V, because with a colour the factor can be fitted rather than assumed.
 
 WHAT DECIDES HOW MANY REGIONS YOU FIND
@@ -50,26 +50,6 @@ USAGE
         --distance-mpc 16.7 --sector-method --completeness
 """
 
-# ===========================================================================
-# GENERATED FILE - do not edit.
-#
-# Built by build.py on 2026-09-11 10:51 from:
-#   HII_From_Images.py
-#   interactive_input.py
-#   frame_inventory.py
-#   anchor_registration.py
-#   galaxy_window.py
-#   galaxy_extent.py
-#   deprojection.py
-#   galaxy_catalogue.py
-#   continuum_subtraction.py
-#   radial_profiles.py
-#
-# This file is standalone on purpose: it needs nothing else from the
-# project, only the usual third-party packages. The cost of that is this
-# warning - a fix made here is overwritten by the next build. Change the
-# source above instead, then run build.py again.
-# ===========================================================================
 
 
 from __future__ import annotations
