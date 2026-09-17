@@ -18,6 +18,6 @@ openpyxl
 
 # Created by: Dr. Boaz Ron Zohar
 # Affiliation: Kinneret Observatory
-Member of the LCO Global Sky Partners programme
+# Member of the LCO Global Sky Partners programme
 # Part of Observational Astronomy Education Tools
 # https://github.com/BoazRonZohar/ObservationalAstronomyEducationTools

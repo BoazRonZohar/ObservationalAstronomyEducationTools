@@ -42,10 +42,10 @@ are inside the files.
 
 | Tool | What it answers |
 |---|---|
-| `Plan_Eclipsing_Binaries_Any_Telescope.html` | Which eclipsing binaries are in eclipse tonight, from *your* coordinates. 19,935 systems. |
+| `Plan_Eclipsing_Binaries_Any_Telescope.html` | Which eclipsing binaries are in eclipse tonight, from *your* coordinates. 18,813 systems. |
 | `Plan_Exoplanet_Transits_Any_Telescope.html` | Which exoplanets transit tonight, from your coordinates. 107 bright planets. |
 | `Plan_Eclipsing_Binaries_LCO.html` | The same for the LCO network, plus ready-made observing windows and a downloadable request file. |
-| `Plan_Exoplanet_Transits_LCO.html` | The same for transits. 4,477 transits. |
+| `Plan_Exoplanet_Transits_LCO.html` | The same for transits. 4,477 planets. |
 
 Enter your latitude, longitude and a date; every time is given in your own local
 clock and in UTC. The two `LCO` tools also build the JSON request you submit to
@@ -314,7 +314,7 @@ Use these tools, change them and teach with them freely. Three conditions:
   licence, so it stays available to the next teacher.
 
 The licence covers the tools. The catalogues and services they draw on belong
-to others and carry their own terms; see `LICENSE` for the list.
+to others and carry their own terms; see `NOTICE` for the list.
 
 Created by **Dr. Boaz Ron Zohar**
 Kinneret Observatory · Member of the LCO Global Sky Partners programme

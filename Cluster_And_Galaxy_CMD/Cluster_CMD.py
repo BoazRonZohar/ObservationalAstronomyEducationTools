@@ -29,8 +29,8 @@ TWO KINDS OF CLUSTER, and the difference matters
                  (Vizier J/A+A/640/A1), which used Gaia proper motions and
                  parallaxes to decide which stars actually belong. Field
                  stars that merely lie in the same direction are excluded.
-                 Give the catalogue's name for the cluster - M6 is NGC_6405
-                 there. Open_Cluster_Name_Resolver.py translates for you.
+                 The catalogue's own name for the cluster is looked up for
+                 you - M6 is NGC_6405 there.
 
   Globular (G)   No such membership catalogue exists for these, so members
                  are taken geometrically: everything inside a radius you
@@ -38,15 +38,21 @@ TWO KINDS OF CLUSTER, and the difference matters
 
 WHAT IT ASKS YOU
 
-  cluster type, O or G
-  cluster name
-  cluster radius in pixels        globular clusters only
-  distance in parsecs             turns apparent magnitude into absolute
-  colour excess E(B-V)            corrects both the colour and the brightness.
-                                  A_V is not asked for separately: it is
-                                  3.1 x E(B-V), so asking for both would let
-                                  an impossible pair through unnoticed
-  the two FITS paths
+  a folder of frames              which file is B and which is V is read from
+                                  each frame's FILTER keyword, and the cluster
+                                  name from OBJECT. Press Enter instead to name
+                                  the two files and the cluster yourself
+  cluster type, O or G            only if SIMBAD does not say
+  distance in parsecs             offered from the Harris catalogue for a
+                                  globular, Dias for an open cluster, with its
+                                  source shown; Enter accepts, or type your own
+  colour excess E(B-V)            offered the same way. It corrects both the
+                                  colour and the brightness. A_V is not asked
+                                  for separately: it is 3.1 x E(B-V), so asking
+                                  for both would let an impossible pair through
+  cluster radius in pixels        globular clusters only. The catalogue's
+                                  half-light radius is shown in pixels as a
+                                  yardstick; a globular reaches several times it
 
 HOW IT WORKS
 
@@ -85,7 +91,7 @@ cluster its own folder.
     fluxes_calibrated.csv           the same sources in real magnitudes
     fluxes_calibrated_galactic.csv  and after extinction and distance are
                                     taken out, so the values are absolute
-    fluxes_calibrated_galactic_CMD.png
+    CMD_whole_frame_sources_all_<N>.png
                                     the diagram for the whole frame, members
                                     and field stars together
 
@@ -99,18 +105,27 @@ cluster its own folder.
     fluxes_cluster_only.csv                    the members
     fluxes_cluster_only_calibrated.csv         in real magnitudes
     fluxes_cluster_only_galactic.csv           extinction and distance removed
-    fluxes_cluster_only_galactic_CMD.png       the cluster's own diagram
-    cluster_with_stars.png                     the second-band image with the
+    CMD_cluster_sources_all_<N>.png            the cluster's own diagram
+    map_cluster_sources_all_<N>.png            the second-band image with the
                                                members marked, so you can see
                                                whether the selection makes sense
+
+  Twice over, crowded sources set aside
+
+    A source with another source inside its own aperture, or one too narrow or
+    too wide to be a single star, is not measured honestly. Each diagram and
+    map above is written again without them, as ..._no_overlap_<N>.png, with
+    the table beside it as <scope>_no_overlap_<N>.csv. <N> is the number of
+    sources in the picture. In a crowded globular the two versions can differ
+    a great deal; which to believe is a judgement about the cluster.
 
   If you look at three files, look at these:
 
     calib_stars_apass.csv                 did the calibration have anything
                                           to work with
-    cluster_with_stars.png                 did the membership step pick the
+    map_cluster_sources_*.png             did the membership step pick the
                                           cluster and not the field
-    fluxes_cluster_only_galactic_CMD.png  the diagram, in absolute magnitude
+    CMD_cluster_sources_*.png             the diagram, in absolute magnitude
 
   Comparing the two diagrams is the point. The whole-frame one is a scatter;
   the members-only one should show a main sequence. If it does not, the

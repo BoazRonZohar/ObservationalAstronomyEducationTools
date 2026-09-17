@@ -36,6 +36,13 @@ citation requirements:
   SkyBoT                       IMCCE / Observatoire de Paris
   Minor Planet Center          IAU / Smithsonian Astrophysical Observatory
   Cantat-Gaudin open clusters  Vizier J/A+A/640/A1
+  Harris globular clusters     Vizier VII/202 (2010 edition)
+  Dias open clusters           Vizier B/ocl
+  APASS DR9                    AAVSO, Vizier II/336
+  HyperLeda                    Vizier VII/237
+  Cosmicflows-3                Tully et al. 2016, Vizier J/AJ/152/50
+  SFD dust maps                Schlafly & Finkbeiner 2011, via IRSA
+  SIMBAD and VizieR            CDS, Strasbourg
 
 If you publish results obtained with these tools, cite the underlying data
 sources as those projects ask.
