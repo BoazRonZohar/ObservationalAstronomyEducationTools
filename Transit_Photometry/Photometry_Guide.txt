@@ -11,13 +11,19 @@ That is all. The script asks you for everything it needs:
 
     frames folder           (the original colour frames, unprocessed)
     output folder
-    k for the aperture      Enter accepts the default
-    k for the inner annulus Enter
-    k for the outer annulus Enter
+    choose the aperture and sky ring automatically?   Enter = yes
     camera gain             Enter
     camera RON              Enter
 
-You do not need to remember any option. Everything listed below is a
+At the end of every run it prints a table of the comparison stars — how bright
+each one is and how much it scattered — and leaves the same table in the output
+folder. See "Choosing the comparison stars yourself" below.
+
+Run it a second time on the same folder and it notices the first run and
+offers something better than measuring again: to choose the comparison stars
+yourself, from what you can now see, in seconds.
+
+You do not need to remember any option. Everything listed further down is a
 departure from the defaults, and the defaults are what tested correct.
 
 
@@ -30,11 +36,17 @@ What the script does
    meridian flip is measured and marked, not thrown out.
 3. Splits the three colour channels in memory. No intermediate files, and no
    need for Fitswork.
-4. Finds the star from the coordinates the telescope recorded, and picks 12
-   comparison stars.
-5. Measures every channel by two different positioning methods and compares
+4. Finds the star from the coordinates the telescope recorded.
+5. Looks for a companion too close to the target for a star finder to see, and
+   if there is one, keeps it out of the aperture. It also keeps neighbouring
+   stars out of the target's sky ring. Both are explained below.
+6. Picks 12 comparison stars in each channel. Each channel chooses its own —
+   a star saturated in blue can be perfect in red — but a star keeps the same
+   name in every channel: C8 is one star, wherever you see it.
+7. Measures every channel by two different positioning methods and compares
    the two.
-6. Writes everything to a folder called Output_<star name>.
+8. Writes everything to a folder called Output_<star name>, and prints the
+   comparison-star table.
 
 
 What you get
@@ -44,12 +56,27 @@ Inside Output_<star name>:
 
     SUMMARY.txt              <- read this. The summary and the legend.
     SUMMARY.csv                the same, for Excel
+    comparison_stars.txt     <- how each comparison star behaved. Read this
+                                before choosing stars yourself.
     G_wcs_light_curve.png      the light curve
-    G_wcs_comp_C1..C12.png     a plot per comparison star
-    G_wcs.csv / .xlsx          the full measurements
-    G_anchor.csv               the second method, for comparison
+    G_light_curve.xlsx         the light curve as a spreadsheet
+    stars_used.png             a chart of the field, target and comparison
+                               stars marked
+    Details\
+      G_wcs_comp_C1..C12.png   a plot per comparison star (target minus that
+                               star)
+      G_wcs.csv / .xlsx        the full measurements
+      G_anchor.csv             the second method, for comparison
 
 (G, R or B according to the channel)
+
+After you have chosen the comparison stars yourself, the new results are
+written beside the original ones, which are never touched:
+
+    G_reselected_light_curve.png
+    G_reselected_light_curve.xlsx
+    G_reselected_comp_C..png
+    Details\G_reselected.csv
 
 
 How to read the summary
@@ -76,6 +103,9 @@ How to read the summary
                                 1.2 to 2    Maybe. Not clean enough to claim.
                                 above 2     A real change.
 
+                            It needs at least four comparison stars. With
+                            fewer, a "-" is written instead.
+
                             Why against the comparison stars and not against
                             the noise: photometric noise does not behave like
                             clean random noise. Airmass and transparency
@@ -96,6 +126,142 @@ How to read the summary
                             CHECK    = they did not, and it is worth looking
                                        before you rely on the result.
 
+    The notes in square brackets after each channel say what the script did
+    on its own for that channel — a companion found and the aperture capped, a
+    star moved out of the sky ring, comparison stars chosen by hand, and so on.
+    Worth reading.
+
+
+Choosing the comparison stars yourself
+--------------------------------------
+
+The script chooses the comparison stars by how steady they stayed over the
+night. That is a good test, but it cannot see saturation. On a night when the
+exposure was too long, the brightest stars in the field have their centres
+clipped flat, and how much light is clipped changes from frame to frame with
+the seeing. Those stars look steady over hours and add noise from one frame to
+the next — and they are exactly the ones an automatic choice favours.
+
+On the WASP-52 night of 2026-09-07, 60 s exposures, the automatic choice gave
+41.8 / 18.6 / 33.7 mmag of noise in R / G / B. Choosing by hand from the table
+gave 21.0 / 15.4 / 32.1 on the same frames.
+
+How:
+
+  1. Run the script normally.
+
+  2. Look at the result: the light curve, the plots in Details — one per
+     comparison star — and the table the script printed at the end, which is
+     also in comparison_stars.txt:
+
+        name   brightness   B scatter  G scatter  R scatter
+                                (mmag)     (mmag)     (mmag)
+        C4        2.09x          58         38         54
+        C8        1.41x          58         39         36
+        C9        1.20x          44         22          -    <- close to the target
+        C13       1.06x          38         21         25    <- close to the target
+        C15       1.01x          40         22          -    <- close to the target
+
+     brightness   the star's flux divided by the target's
+     scatter      how much (target minus this star) jumps from one frame to
+                  the next — what this star would add as noise. Smaller is
+                  better.
+     -            the star was not picked in that channel, so there is no
+                  measurement of it there.
+
+  3. Run the script again on the same folder. It will say:
+
+        A previous run was found here:
+           Output_WASP-52
+        Choose comparison stars from the previous run instead of measuring
+        again? [y/N]
+
+     Answer y. It shows the table again and asks which stars to use. Type the
+     names separated by commas — C9,C10,C11,C12,C13,C14,C15,C16 — and it
+     rebuilds the light curves from the measurements already on disk. No frame
+     is read again: seconds instead of minutes. Enter at that question leaves
+     everything as it was.
+
+Reading the table — which column matters depends on the night:
+
+    When the exposure was too long, the comparison stars much brighter than
+    the target are the clipped ones, and they scatter most. Stars close to the
+    target in brightness saturate the way the target does, and that error
+    cancels. On the WASP-52 night above, everything brighter than 1.4x the
+    target scattered 36-67 mmag; everything within 1.2x scattered 21-27.
+
+    When nothing saturated — the LCO frames of the same star, for instance —
+    it is the other way round: the brightest comparison star is the quietest,
+    because it simply has the most light. There the brightest star scattered
+    4 mmag.
+
+    So do not follow a rule. Look at the scatter column; brightness tells you
+    why a star is bad, not whether it is.
+
+Give a long list, not a short one:
+
+    Each channel measures only its own 12 stars, and the names across all
+    three channels run to 18-23. A star you name may therefore be missing in
+    one channel. The script says so — "C9, C10 were not measured in R" — and
+    carries on with the rest. Name only four stars and two channels may be left
+    with three, which is too few for "variation vs comparison" to be computed.
+    Name every good star in the table and each channel takes what it has.
+
+    On the WASP-52 night: four names left R and B with three stars each; eight
+    names left every channel with four or more, and gave the better noise.
+
+Names you remember from an older run:
+
+    The numbering follows the brightness of the stars, and which 12 stars get
+    picked depends on the reference frame. Add or remove a frame and the
+    numbers can change. The names in the current comparison_stars.txt are the
+    ones that count. To find the same star again, use its position, shown in
+    stars_used.png.
+
+
+Close companions and stars in the sky ring
+------------------------------------------
+
+Both of these used to need your radii in target.txt. The script now handles
+them itself.
+
+A companion too close to see. A star finder reports one source per peak, so a
+companion closer than about one star-width never shows up in its list: the
+pair looks like a single, slightly stretched star. The script looks at the
+light itself instead, the way you would by eye. Along the long axis of the
+star, one star — however smeared — rises to a single peak and falls away. Two
+stars give peak, dip, peak, like a saddle between two summits. On Gaia DR3
+4477867314376415360 this finds the companion at 5 px and 1.78 mag fainter;
+Gaia says 5.12 px and 1.73.
+
+When it finds one, the aperture follows the seeing downwards. That is the
+opposite of what every other star gets, and it is the point: a wider star
+smears the companion further into the aperture, so a radius that grows with
+the seeing swallows more of the companion exactly on the soft frames. On that
+star the old behaviour let in 7% to 14% of the companion's light, changing with
+the seeing, and wrote 82 mmag of false variation into the light curve — deeper
+than the eclipse being looked for. Now the aperture holds the companion's light
+under 1% on every frame, every star in the frame gets the same radius so the
+comparison stays fair, and a frame too soft to separate the pair at all is
+dropped rather than measured. SUMMARY.txt says what was found and how many
+frames were dropped.
+
+A star in the sky ring. The ring around the target is supposed to hold empty
+sky. A star inside it makes the sky look brighter, too much is subtracted, and
+the target comes out faint — and because the ring also grows with the seeing,
+a neighbour can sit outside it on sharp frames and inside it on soft ones.
+Comparison stars never have this problem, because they are chosen to be
+isolated. The target cannot be chosen, so the script checks its ring: it first
+pulls the outer edge in, below the neighbour, to keep the ring close to the
+star; only if that leaves too thin a ring does it push the inner edge out past
+the neighbour instead. On the same star the target's sky had been 5 ADU too
+bright on sharp frames and 21 on soft ones; afterwards the difference is gone.
+
+On a field with no close companion and nothing in the ring — which is most
+fields — none of this does anything, and the numbers come out exactly as they
+did before. That was checked on the LCO frames of WASP-52 and of
+J050333.29+174832.1, which came back identical to the last digit.
+
 
 Giving the script exact coordinates and your own radii
 ------------------------------------------------------
@@ -110,10 +276,9 @@ When you need this:
      coordinates are better than the header's, it is better for the script to
      use yours.
 
-  2. When there is a close companion. An aperture sized from the measured
-     width swallows both, and an annulus sized the same way can land on the
-     neighbour instead of on sky. Radii you chose by eye for this field beat
-     any rule.
+  2. When the automatic handling of a close companion is not what you want —
+     you can see the pair and want to set the radii yourself. Radii you give
+     here always win over anything the script works out.
 
 How: put a text file called target.txt in the frames folder, containing:
 
@@ -180,7 +345,8 @@ one).
 Options, if you want to depart from the defaults
 ------------------------------------------------
 
-All optional. Without any of them you get the correct behaviour.
+All optional. Without any of them you get the correct behaviour, and the
+script asks for anything it needs.
 
     --folder "path"           skip the question
     --output_dir "path"       skip the question
@@ -188,11 +354,33 @@ All optional. Without any of them you get the correct behaviour.
     --channels G              measure one channel instead of three.
                               Three times faster. G is the quietest.
 
-    --n_comps 12              how many comparison stars to pick. 12 is the
-                              default.
+    --n_comps 12              how many comparison stars to pick in each
+                              channel. 12 is the default.
 
-    --star_list "path"        use a star list you prepared in AIP4Win instead
-                              of the automatic choice.
+    --star_list "path"        use a star list you prepared yourself instead
+                              of the automatic choice. Any star in the field
+                              can go in it, including ones the script would
+                              never pick. Format: see "Giving the star-list
+                              tool its list" below.
+
+    --comps C9,C10,C11        use exactly these comparison stars. The same as
+                              answering the question after a first run.
+    --exclude C1,C5           drop these from the automatic choice. Refuses to
+                              leave fewer than four.
+    --reselect                on a folder with a previous run, choose the
+                              comparison stars again without being asked
+                              whether to.
+    --no_ask_comps            never ask about the comparison stars.
+
+    --pair_contam 0.01        how much of a close companion's light the
+                              aperture may carry. 1% by default.
+    --pair_min_flux 0.5       drop a frame if keeping the companion out would
+                              leave less than this share of the target's light.
+    --pair_sep_px 5.1         a companion you already know about, from Aladin
+                              or Gaia, in pixels — for when it is too faint to
+                              be found in the frames.
+    --no_pair_cap             do not look for a companion at all.
+    --no_ring_fix             leave the sky ring alone.
 
     --fixed_fwhm              go back to the old behaviour: one FWHM from the
                               reference frame for the whole run, instead of a
@@ -217,6 +405,8 @@ What the script does not do
     It writes nothing into your data folders. It only reads from them.
     It does not keep the separated colour channels - they are pulled out in
     memory and discarded.
+    It does not overwrite a run when you choose comparison stars again - the
+    new results go beside the old ones.
     It does not touch any of your other scripts.
 
 
@@ -235,6 +425,13 @@ If something fails
         The two positioning methods did not agree. Look at SUMMARY.txt and at
         the curve before you rely on the result.
 
+    "C9, C10 were not measured in R"
+        Not a failure. Those comparison stars were not among the 12 picked in
+        that channel. Name more stars, and each channel takes the ones it has.
+
+    "variation vs comparison  -"
+        Fewer than four comparison stars were left in that channel. Name more.
+
 
 The other two tools
 -------------------
@@ -248,12 +445,27 @@ The other two tools
         Like this script, it finds the target and the comparison stars by
         itself, from the plate solution in each frame's header.
 
+        Everything in this guide applies to it: the close companion, the sky
+        ring, the comparison-star table, and choosing the stars again on a
+        second run. Where this guide says "channel", read "filter" — V, rp and
+        so on.
+
     Photometry_Transit_Eclipse_Mono_Star_List.py
         For monochrome frames that have NO plate solution — frames already
         stacked or calibrated in AIP4Win, for instance, where the WCS was lost
         along the way. Nothing can be found automatically without a plate
         solution, so you mark the stars yourself, once, and hand the script a
         list. See the next section.
+
+        It also looks for a close companion and checks the sky ring. It
+        measures every frame at one fixed aperture rather than one that follows
+        the seeing, so there the aperture is capped once, for the whole run.
+
+        It also prints the comparison-star table, and writes
+        comparison_stars.txt. But it has no folder of earlier measurements to
+        go back to, so it asks which stars to use at the end of the same run —
+        after measuring and before writing anything — and every output then
+        comes from your choice. Enter keeps the ensemble shown in the table.
 
 
 Giving the star-list tool its list
@@ -284,6 +496,9 @@ ready one to copy next to this guide, star_list_example.csv:
 The positions do not have to be precise to the pixel — each star is
 re-centred with a local centroid before it is measured. Getting within two or
 three pixels is enough.
+
+The same CSV works with the two plate-solved scripts too, through --star_list,
+when you want comparison stars the automatic choice would not pick.
 
 **2. An AIP4Win "Star Data Tool" export** — the text report the tool writes
 out, with its X / Y / Sigma / FWHM table. Hand the script that file as it is;

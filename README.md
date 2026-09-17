@@ -91,10 +91,29 @@ stars show in the same frames*. Photometric noise is not white — airmass and
 transparency wander slowly, and a slow wander looks exactly like a shallow
 eclipse. If the comparison stars wander with your target, it was the atmosphere.
 
-`Photometry_Guide.txt` covers all of this in detail, including how to hand the
-script exact coordinates for a close pair, and the two accepted star-list
-formats: a four-column CSV — there is one to copy in `star_list_example.csv` —
-or an AIP4Win *Star Data Tool* export, which needs no editing at all.
+**Close companions are found and kept out.** A star finder never reports a
+companion closer than about one star-width — the pair arrives as one stretched
+star. The tools look at the light instead, the way an observer does by eye: one
+star rises to a single peak, two stars give peak–dip–peak. When a companion is
+found, the aperture *shrinks* as the seeing softens, instead of growing into
+the companion; left to grow, it wrote 82 mmag of false variation into one light
+curve. Neighbouring stars are kept out of the target's sky ring the same way.
+On fields with neither, nothing changes.
+
+**You choose the comparison stars after seeing what they did.** Every run
+prints a table — each comparison star's brightness relative to the target and
+how much it scattered, per channel — and saves it as `comparison_stars.txt`.
+Run the tool again on the same folder and it offers to rebuild the light curve
+with the stars you name, from the measurements already on disk: seconds, not
+minutes, and the original run is kept. On a night with saturated exposures
+this took one channel from 42 to 21 mmag of noise. No option to remember — the
+tool asks.
+
+`Photometry_Guide.txt` covers all of this in detail, including how to read the
+comparison-star table, how to hand the script exact coordinates, and the two
+accepted star-list formats: a four-column CSV — there is one to copy in
+`star_list_example.csv` — or an AIP4Win *Star Data Tool* export, which needs no
+editing at all.
 
 ---
 
