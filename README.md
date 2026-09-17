@@ -131,6 +131,31 @@ it names one, you get a link straight to its
 [Minor Planet Center](https://www.minorplanetcenter.net/) entry. When it names
 nothing, that is the interesting case.
 
+**The quick look.** Reading a whole night off an external disk takes a long
+time, so the tool first offers a quick look: 14 frames spread over the **whole**
+run, all of them searched. If you ask for more, each pass doubles the sampling —
+14, 27, 53, 105 … — until the sample is the entire run. The new frames fall
+between the ones already looked at, and the time span never shrinks: how far a
+track moved is what it is judged by, so the full arc is kept at every pass.
+
+**Crowded fields.** Stars that stay put are set aside first, and *every*
+remaining candidate is then searched — not only the brightest, because an
+asteroid is usually among the faintest things left. In a rich Milky Way field
+that means thousands of candidates per frame and a search of several minutes; a
+counter shows how far it has got and roughly how long is left. `--max_per_frame`
+can cap the number, but it keeps the brightest and throws away the faint end.
+
+**Expect false alarms, and look.** The tool is tuned to miss as little as
+possible, so a rich field can report a dozen or more "movers" crawling at a few
+arcsec/hour in random directions — usually two close stars blended together,
+whose combined centre drifts as the seeing changes. Every track comes with a
+picture of the same field at the start, middle and end of the run: if the
+circle moves and the dot under it does not, it is not an object.
+
+Everything is written to a `result` folder: a `_tracks.txt` with each object's
+rate, direction, position and identification, one picture per object, and a
+`run_log.txt` of everything that appeared on the screen.
+
 ---
 
 ## Image processing
