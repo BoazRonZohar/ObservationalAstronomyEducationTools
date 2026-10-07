@@ -1,20 +1,34 @@
 """Build isochrones_PARSEC_UBV.csv.gz from raw CMD 3.9 output files.
 
-Reads every raw/MH*_age*.dat(.gz) file downloaded from the CMD web interface
+Reads every MH*_age*.dat(.gz) file downloaded from the CMD web interface
 (PARSEC v1.2S + COLIBRI, UBVRIJHK Maiz-Apellaniz 2006 + Bessell 1990, Vega
 mags, A_V = 0) and writes one compact table of (MH, logAge, label, Mini, MV, BV)
 for the Cluster_CMD tool.
+
+    python make_isochrone_table.py [folder of raw files]
+
+The raw files are not kept in the repository; without an argument they are
+looked for in raw/ next to this script.
 """
 import glob
 import gzip
 import os
 import re
+import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-RAW = os.path.join(HERE, "raw")
+RAW = sys.argv[1] if len(sys.argv) > 1 else os.path.join(HERE, "raw")
 OUT = os.path.join(HERE, "isochrones_PARSEC_UBV.csv.gz")
 
-LABELS_KEPT = range(1, 8)   # 1 MS ... 7 early AGB
+# 0 pre-main sequence ... 7 early AGB. Label 0 has to stay: PARSEC calls a
+# low-mass star "pre-main sequence" until it has burnt a little of its
+# hydrogen, which for a star below the Sun's mass takes far longer than
+# reaching the main sequence - at [M/H] = 0 and 1 Gyr everything below
+# 0.75 solar masses is still label 0. Leaving it out cut the lower main
+# sequence off the younger isochrones (at [M/H] = 0, every one younger than
+# about 4 Gyr). For a really young cluster label 0 is also the right thing to
+# keep: its low-mass stars are still contracting, above the main sequence.
+LABELS_KEPT = range(0, 8)
 MV_LIMIT = 12.0
 MIN_STEP = 0.01             # mag, in the (BV, MV) plane
 
@@ -93,7 +107,7 @@ def main():
         "Download date (CMD timestamp of first file): " + (date.group(1) if date else "unknown"),
         "Grid: [M/H] = " + " ".join("%.2f" % m for m in mhs),
         "Grid: log(age/yr) = %.2f..%.2f, step 0.1 below 8.0 and 0.02 from 8.0 (%d ages)" % (ages[0], ages[-1], len(ages)),
-        "Kept: labels 1-7 (MS to early AGB; dropped 0 PMS, 8 TP-AGB, 9 post-AGB) and MV <= 12",
+        "Kept: labels 0-7 (pre-main sequence to early AGB; dropped 8 TP-AGB, 9 post-AGB) and MV <= 12",
         "Thinning: first and last point of each run of equal label always kept; otherwise a point is kept",
         "  only if it is at least 0.01 mag from the last kept point in the (BV, MV) plane",
         "Columns: MH = [M/H]; logAge = log10(age/yr); label = PARSEC evolutionary stage;",

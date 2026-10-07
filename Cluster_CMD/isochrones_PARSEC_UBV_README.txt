@@ -49,10 +49,10 @@ Lines starting with '#' at the top are comments. Then a header row:
   MH,logAge,label,Mini,MV,BV
 MH     [M/H], 3 decimals
 logAge log10(age/yr), 3 decimals
-label  PARSEC evolutionary stage: 1 main sequence, 2 subgiant (Hertzsprung
-       gap), 3 red giant branch, 4 core He burning (1st part: HB / red clump),
-       5 core He burning (2nd part, blue loop), 6 core He burning (3rd part),
-       7 early AGB
+label  PARSEC evolutionary stage: 0 pre-main sequence (see below),
+       1 main sequence, 2 subgiant (Hertzsprung gap), 3 red giant branch,
+       4 core He burning (1st part: HB / red clump), 5 core He burning
+       (2nd part, blue loop), 6 core He burning (3rd part), 7 early AGB
 Mini   initial mass in solar masses, 5 significant digits
 MV     absolute V magnitude (Vmag), 3 decimals
 BV     B - V (Bmag - Vmag), 3 decimals
@@ -62,8 +62,13 @@ own order inside each isochrone (increasing Mini).
 
 Selection and thinning
 ----------------------
-- Only labels 1 to 7 are kept (dropped: 0 pre-main sequence, 8 TP-AGB,
-  9 post-AGB).
+- Only labels 0 to 7 are kept (dropped: 8 TP-AGB, 9 post-AGB).
+  Label 0 is kept on purpose. PARSEC calls a low-mass star "pre-main
+  sequence" until it has burnt a little of its hydrogen, which for stars
+  below the Sun's mass takes far longer than reaching the main sequence:
+  at [M/H] = 0 and 1 Gyr everything below 0.75 solar masses is still
+  label 0. Without it the younger isochrones (at [M/H] = 0, every one
+  younger than about 4 Gyr) would have no lower main sequence.
 - Only points with MV <= 12.
 - Inside each isochrone, the first and last point of each run of equal label
   are always kept; any other point is kept only if it lies at least 0.01 mag
@@ -93,5 +98,8 @@ For the photometric system:
 
 Regenerating
 ------------
-  python make_isochrone_table.py
-reads raw/MH*_age*.dat.gz and rewrites isochrones_PARSEC_UBV.csv.gz.
+  python make_isochrone_table.py [folder of raw files]
+reads MH*_age*.dat(.gz) from that folder (default: raw/ next to the script)
+and rewrites isochrones_PARSEC_UBV.csv.gz. The raw CMD outputs are not in the
+repository; download them again from the CMD web interface with the settings
+above, one file per [M/H] and age range, named MH<value>_age<range>.dat.
