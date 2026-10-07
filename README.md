@@ -184,7 +184,8 @@ never into the folder your frames live in.
 
 | Tool | |
 |---|---|
-| `Cluster_CMD.py` | Photometry and colour-magnitude diagrams for open and globular clusters: calibration, extinction correction, membership selection. Cluster membership comes from Gaia astrometry, not from whatever happens to lie in the same direction. |
+| `Cluster_CMD.py` | Photometry and colour-magnitude diagrams for open and globular clusters: calibration, extinction correction, membership selection, and the cluster's age and distance from isochrones. Cluster membership comes from Gaia astrometry, not from whatever happens to lie in the same direction. |
+| `isochrones_PARSEC_UBV.csv.gz` | The PARSEC isochrones `Cluster_CMD.py` fits, in Johnson B and V. It has to stay next to `Cluster_CMD.py`; how it was made, and what to cite, is in `isochrones_PARSEC_UBV_README.txt`. |
 | `Open_Cluster_Name_Resolver.py` | Turns `M6` into `NGC_6405` — the name the catalogue actually uses. `Cluster_CMD.py` now does this itself; useful on its own when a name needs checking. |
 | `List_Catalogue_Clusters.py` | Prints every cluster name in the catalogue, for when a name is being rejected. |
 
@@ -220,6 +221,18 @@ instrumental b−v must rise with the catalogue's B−V. On a colour camera a fa
 one means the image was flipped before the colours were separated, so blue and
 red are swapped; the red channel is then measured as blue, and the run says so
 loudly. On filter frames it means the files are mislabelled, and the run stops.
+
+Last, it fits theoretical isochrones to the members, for the cluster's age and
+distance: the PARSEC models (Bressan et al. 2012), for the metallicity offered
+from the catalogues and confirmed like the distance. An age is given only when
+the members reach the turnoff, the one part of the diagram that changes with
+age. Otherwise there is a distance only — from the main sequence at the
+catalogue age for an open cluster, from the horizontal branch for a globular —
+and the run says why. Each number comes with the range it spans over 200
+resamplings of the stars, beside the distance from the members' Gaia parallaxes
+and the catalogue values. The isochrones are read from
+`isochrones_PARSEC_UBV.csv.gz` beside the script, not downloaded; without that
+file this step is left out and everything else runs.
 
 The diagram is in absolute magnitude M_V, with the observed V on the right-hand
 axis. Each run writes into a new folder beside the frames,

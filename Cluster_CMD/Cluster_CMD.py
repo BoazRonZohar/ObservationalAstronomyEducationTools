@@ -12,7 +12,8 @@ WHAT IT DOES
 
 Takes a B-band and a V-band image of a star cluster - or the blue and green
 channels of a colour camera - and produces its colour-magnitude diagram, in
-absolute magnitude.
+absolute magnitude, and - as far as the stars allow - the cluster's age and
+distance from theoretical isochrones.
 
 A cluster is the closest astronomy comes to a controlled experiment: the
 stars formed together, sit at the same distance, and are seen through the
@@ -72,6 +73,13 @@ WHAT IT ASKS YOU
                                   colour and the brightness. A_V is not asked
                                   for separately: it is 3.1 x E(B-V), so asking
                                   for both would let an impossible pair through
+  metallicity [M/H]               for the age and distance only, and only when
+                                  the isochrone table is beside the script.
+                                  Offered from Harris for a globular ([Fe/H]
+                                  plus 0.21, for the extra oxygen and the like
+                                  in a globular's stars - see
+                                  ALPHA_ENHANCEMENT_MH), from Dias for an open
+                                  cluster, or solar when Dias has none
   membership method, and the      globular clusters only
   cluster radius in pixels        (the radius only for the radius method; the
                                   catalogue's half-light radius is shown in
@@ -117,6 +125,15 @@ HOW IT WORKS
   6. selects the members, by catalogue, by proper motion or by radius
   7. corrects for extinction and distance - M_V = V - A_V - (5 log10 d - 5) -
      and plots the diagram
+  8. fits PARSEC isochrones to the members, for the age and the distance -
+     see fit_age_and_distance(). An age only when the members reach the
+     turnoff, the one part of the diagram that changes with age; otherwise
+     a distance only - from the main sequence at the catalogue age for an
+     open cluster, from the horizontal branch for a globular - with the
+     reason. The isochrones are the file isochrones_PARSEC_UBV.csv.gz beside
+     this script (PARSEC: Bressan et al. 2012; the other references are in
+     isochrones_PARSEC_UBV_README.txt). Without it this step is left out and
+     everything else runs
 
 WHAT YOU GET
 
@@ -172,6 +189,25 @@ went in.
     map above is written again without them, as ..._no_overlap_<N>.png, with
     the table beside it as <scope>_no_overlap_<N>.csv. <N> is the number of
     sources in the picture.
+
+  Age and distance (when the isochrone table is beside this script)
+
+    CMD_isochrone_fit_<N>.png       the members with the best-fitting isochrone
+                                    and those at the 16th and 84th percentiles
+                                    of the age; V0 on the left, M_V at the
+                                    fitted distance on the right. <N> is the
+                                    number of stars in the fit
+    isochrone_fit_map.png           how well every age and distance tried
+                                    fits, and where the resamplings landed
+    isochrone_fit_stars.csv         the members, whether each was in the fit,
+                                    and how far it lies from the isochrone
+    isochrone_best.csv              the isochrone drawn, in absolute and in
+                                    observed magnitudes
+    isochrone_fit_grid.csv          the fit statistic for every age and
+                                    distance tried
+
+    The age and distance with their ranges, the distance from the Gaia
+    parallaxes and the catalogue values are printed at the end of the run.
 
     run_summary.txt                 every number the run used and found
 
@@ -292,6 +328,51 @@ CMD_MAX_BV_ERR = 0.3
 # absolute magnitude M_V. Set False to plot apparent (dereddened) V instead.
 APPLY_DISTANCE_MODULUS = True
 
+# ------------------- Age and distance config -------------------
+# The age and distance come from sliding theoretical isochrones (the Padova
+# PARSEC models, from the table that sits beside this script) over the
+# members' diagram - see fit_age_and_distance(). Set False to skip that step.
+FIT_ISOCHRONES = True
+ISOCHRONE_FILE = "isochrones_PARSEC_UBV.csv.gz"   # looked for next to this script
+FIT_MAX_BV_ERR = 0.10     # stars in the fit: B-V error at most this (mag)
+FIT_MAX_V_ERR = 0.05      # and V error at most this
+FIT_FAINTEST_MV = 8.0     # and no fainter than this M_V at the catalogue distance:
+                          # the models' colours are least certain for the coolest dwarfs
+FIT_MIN_STARS = 30        # fewer usable members than this: no fit
+FIT_COLOUR_FLOOR = 0.02   # mag, added in quadrature to every star's B-V error
+FIT_MAG_FLOOR = 0.02      # mag, likewise for V: calibration and model errors
+FIT_D2_CAP = 9.0          # a star further than 3 sigma from the isochrone counts as 3 sigma
+FIT_MU_RANGE = 1.0        # distance moduli tried: the catalogue's value +- this
+FIT_BOOTSTRAP = 200       # resamplings of the stars, for the uncertainties
+FIT_SEED = 1              # the resamplings are random, but the same on every run
+FIT_EBV_STEP = 0.02       # the fit is repeated with E(B-V) +- this, to show its effect
+FIT_CURVE_STEP = 0.01     # mag between points filled in along an isochrone
+FIT_NEIGHBOURS = 16       # isochrone points looked at for each star
+FIT_FLASH_GAP = 0.3       # mag; see _joined()
+TURNOFF_MIN_STARS = 10    # members within 0.5 mag of the turnoff needed for an age
+GC_MIN_LOGAGE = 9.7       # globulars: only ages from 5 Gyr up are tried
+GC_DEFAULT_LOGAGE = 10.08 # 12 Gyr: drawn for a globular whose age cannot be fitted
+
+# PARSEC's stars have the Sun's mix of elements. A globular cluster's stars
+# have about twice as much oxygen, magnesium and the like for each iron atom
+# ([alpha/Fe] = +0.3), and a scaled-solar isochrone mimics that with a higher
+# overall metallicity: [M/H] = [Fe/H] + 0.21 (Salaris, Chieffi & Straniero 1993).
+ALPHA_ENHANCEMENT_MH = 0.21
+
+# The horizontal branch as a standard candle, for a globular whose turnoff is
+# too faint to reach: M_V(HB) = 0.16 [Fe/H] + 0.84 (Harris 1996, 2010 edition).
+HB_MV_SLOPE = 0.16
+HB_MV_ZERO = 0.84
+HB_MIN_STARS = 5
+HB_WINDOW = 1.0           # mag either side of where the catalogue puts the branch
+
+# Gaia DR3 parallaxes come out too small by 0.017 mas on average (Lindegren et
+# al. 2021), and errors common to stars a few arcminutes apart do not average
+# away; 0.011 mas is the size Vasiliev & Baumgardt (2021) found for them.
+GAIA_PLX_ZERO_POINT = -0.017   # mas
+GAIA_PLX_SYSTEMATIC = 0.011    # mas
+GAIA_RUWE_MAX = 1.4            # Gaia's own limit for a well-behaved single-star solution
+
 
 # ------------------- Interactive user input -------------------
 # The command-line arguments, if any. None means a plain interactive run.
@@ -411,8 +492,27 @@ def _matching_row(table, columns, aliases):
     return None
 
 
+def _value(table, row, *names):
+    """A number from a catalogue row, from the first column whose name matches
+    one of names when both are squashed ('[Fe/H]' matches 'FeH'), or None if
+    there is no such column or it is empty."""
+    wanted = {_squash(n) for n in names}
+    for col in table.colnames:
+        if _squash(col) in wanted:
+            try:
+                v = row[col]
+                if np.ma.is_masked(v):
+                    return None
+                v = float(v)
+                return v if np.isfinite(v) else None
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
 def globular_from_harris(name, aliases):
-    """Distance in pc, E(B-V) and half-light radius (arcmin) for a globular.
+    """Distance in pc, E(B-V), half-light radius (arcmin) and a dict of other
+    values ("feh": [Fe/H]) for a globular.
 
     Harris (1996, 2010 edition) is the standard compilation for the Milky Way's
     globulars: 147 of them, a distance for 145 and a reddening for every one.
@@ -422,8 +522,8 @@ def globular_from_harris(name, aliases):
     try:
         tables = Vizier(columns=["**"]).query_object(name, catalog="VII/202")
         if not tables:
-            return None, None, None
-        distance = ebv = half_light = None
+            return None, None, None, {}
+        distance = ebv = half_light = feh = None
         found = False
         for table in tables:
             row = _matching_row(table, ("ID", "Name"), aliases)
@@ -436,17 +536,21 @@ def globular_from_harris(name, aliases):
                 ebv = float(row["E(B-V)"])
             if half_light is None and "Rh" in table.colnames:
                 half_light = float(row["Rh"])
+            if feh is None:
+                feh = _value(table, row, "[Fe/H]")
         if not found:
             print(f"[lookup] the Harris catalogue has no row named {name}",
                   flush=True)
-        return distance, ebv, half_light
+        return distance, ebv, half_light, ({"feh": feh} if feh is not None else {})
     except Exception as exc:
         print(f"[lookup] Harris catalogue unavailable ({exc})", flush=True)
-        return None, None, None
+        return None, None, None, {}
 
 
 def open_cluster_from_dias(name, aliases):
-    """Distance in pc, E(B-V) and diameter for an open cluster.
+    """Distance in pc, E(B-V), diameter and a dict of other values ("feh":
+    [Fe/H], "log_age": log10 of the age in years, where the catalogue has
+    them) for an open cluster.
 
     WHY NOT THE DUST MAPS
     Because they answer a different question. IRSA gives the extinction through
@@ -463,13 +567,13 @@ def open_cluster_from_dias(name, aliases):
     try:
         tables = Vizier(columns=["**"]).query_object(name, catalog="B/ocl")
         if not tables:
-            return None, None, None
+            return None, None, None, {}
         table = tables[0]
         row = _matching_row(table, ("Cluster",), aliases)
         if row is None:
             print(f"[lookup] the Dias catalogue has no row named {name}",
                   flush=True)
-            return None, None, None
+            return None, None, None, {}
 
         def _num(col):
             try:
@@ -477,10 +581,12 @@ def open_cluster_from_dias(name, aliases):
                 return v if v is not None and np.isfinite(v) else None
             except Exception:
                 return None
-        return _num("Dist"), _num("E(B-V)"), _num("Diam")
+        extra = {"feh": _value(table, row, "[Fe/H]"), "log_age": _value(table, row, "Age")}
+        return (_num("Dist"), _num("E(B-V)"), _num("Diam"),
+                {k: v for k, v in extra.items() if v is not None})
     except Exception as exc:
         print(f"[lookup] Dias catalogue unavailable ({exc})", flush=True)
-        return None, None, None
+        return None, None, None, {}
 
 
 MESSIER_TO_CG = {
@@ -542,6 +648,35 @@ def cantat_gaudin_members(cg_name):
     table = table[np.array([str(c) == cg_name for c in table["Cluster"]])]
     print(f"   {len(table):,} stars in {time.time() - t0:.0f} s", flush=True)
     return table
+
+
+def cantat_gaudin_cluster(cg_name):
+    """Age, distance and extinction of an open cluster from Cantat-Gaudin et
+    al. 2020 (J/A+A/640/A1, table 1 - the catalogue the members come from),
+    who estimated them for every cluster from its Gaia photometry and
+    parallaxes: a dict with "log_age", "distance" (pc) and "A_V", empty if
+    the catalogue cannot be reached."""
+    try:
+        res = Vizier(columns=["Cluster", "AgeNN", "AVNN", "DMNN", "DistPc"],
+                     column_filters={"Cluster": f"={cg_name}"},
+                     row_limit=-1).query_constraints(catalog="J/A+A/640/A1/table1")
+        if not len(res):
+            return {}
+        t = res[0]
+        rows = [r for r in t if str(r["Cluster"]) == cg_name]
+        if not rows:
+            return {}
+        row = rows[0]
+        out = {"log_age": _value(t, row, "AgeNN"), "A_V": _value(t, row, "AVNN"),
+               "distance": _value(t, row, "DistPc")}
+        if out["distance"] is None:
+            dm = _value(t, row, "DMNN")
+            out["distance"] = None if dm is None else 10.0 ** (dm / 5.0 + 1.0)
+        return {k: v for k, v in out.items() if v is not None}
+    except Exception as exc:
+        print(f"[lookup] Cantat-Gaudin cluster parameters unavailable ({exc})",
+              flush=True)
+        return {}
 
 
 def vasiliev_baumgardt_row(aliases):
@@ -1711,6 +1846,715 @@ def globular_pm_members(vb_row, wcs_G, shape):
                          "Prob": np.clip(1.0 - (chi[member].values / GC_PM_NSIGMA) ** 2, 0, 1)})
 
 
+# ------------------- Age and distance from isochrones -------------------
+#
+# An isochrone is the line that stars of one age and one composition make in
+# the diagram, from the faintest dwarfs to the most evolved giants: what the
+# models say a cluster of that age should look like. The distance is how far
+# down the magnitude axis it has to be slid to lie on the members, and the age
+# is the isochrone that lies on them best.
+
+def _script_folder():
+    """The folder this script is in. The isochrone table is looked for here,
+    not in the folder the run was started from, so it is found however the
+    script is started."""
+    try:
+        return os.path.dirname(os.path.abspath(__file__))
+    except NameError:          # pasted into an interactive session
+        return os.getcwd()
+
+
+def load_isochrones():
+    """The PARSEC isochrone table that sits beside this script, or None.
+
+    Without it only the age and distance step is left out, with a message
+    saying which file is missing and where it should be; everything else runs.
+    """
+    path = os.path.join(_script_folder(), ISOCHRONE_FILE)
+    if not os.path.isfile(path):
+        loud("AGE AND DISTANCE LEFT OUT: the isochrone table is not here:\n"
+             f"   {path}\n"
+             f"{ISOCHRONE_FILE} comes with this script, in the Cluster_CMD folder of\n"
+             "the repository. Put it next to Cluster_CMD.py to get the age and the\n"
+             "distance; the rest of the run goes ahead without it.")
+        return None
+    try:
+        iso = pd.read_csv(path, comment="#")
+    except Exception as exc:
+        loud(f"AGE AND DISTANCE LEFT OUT: {path} could not be read ({exc})")
+        return None
+    missing = [c for c in ("MH", "logAge", "label", "MV", "BV") if c not in iso.columns]
+    if missing:
+        loud(f"AGE AND DISTANCE LEFT OUT: {path} has no column {', '.join(missing)}")
+        return None
+    print(f"[age] isochrones: {os.path.basename(path)}, {iso['MH'].nunique()} "
+          f"metallicities x {iso['logAge'].nunique()} ages", flush=True)
+    return iso
+
+
+def isochrones_at(iso, mh):
+    """The isochrones of one metallicity, {logAge: (BV, MV, label)} in the
+    table's own order (up in initial mass), for the grid metallicity nearest
+    to mh, and that metallicity. Metallicities are not interpolated: the
+    grid steps by 0.2, so the one used is at most 0.1 from the one asked."""
+    grid = np.unique(iso["MH"].to_numpy(float))
+    mh_used = float(grid[np.argmin(np.abs(grid - mh))])
+    if mh < grid[0] - 0.1 or mh > grid[-1] + 0.1:
+        print(f"   [M/H] = {mh:+.2f} is outside the models ({grid[0]:+.2f} to "
+              f"{grid[-1]:+.2f}); the nearest, {mh_used:+.2f}, is used", flush=True)
+    sub = iso[np.isclose(iso["MH"].to_numpy(float), mh_used)]
+    curves = {}
+    for age, g in sub.groupby("logAge", sort=True):
+        curves[round(float(age), 3)] = (g["BV"].to_numpy(float), g["MV"].to_numpy(float),
+                                        g["label"].to_numpy(int))
+    return curves, mh_used
+
+
+def _joined(bv, mv, label):
+    """For each pair of neighbouring points of an isochrone, whether the line
+    runs on between them.
+
+    The points go up in initial mass, and neighbours are joined by the stars
+    of the masses in between - except where the evolution jumps. A star of
+    about the Sun's mass leaves the top of the red giant branch (PARSEC's
+    stage 3) in the helium flash and reappears on the horizontal branch
+    (stage 4), far away in the diagram, with nothing in between. So
+    neighbours are joined when they are in the same stage or the next one,
+    and the step from 3 to 4 only when it is shorter than FIT_FLASH_GAP.
+    Stages 0 and 1 count as one: PARSEC switches between them back and forth
+    along the main sequence.
+    """
+    if len(bv) < 2:
+        return np.zeros(0, bool)
+    step = np.diff(label)
+    gap = np.hypot(np.diff(bv), np.diff(mv))
+    flash = (label[:-1] == 3) & (label[1:] == 4) & (gap > FIT_FLASH_GAP)
+    main_sequence = (label[:-1] <= 1) & (label[1:] <= 1)
+    return (((step == 0) | (step == 1)) & ~flash) | main_sequence
+
+
+def _segments(bv, mv, label):
+    """The isochrone cut where it does not run on, as arrays of indices - so
+    it is drawn without lines across the jumps."""
+    return np.split(np.arange(len(bv)), np.where(~_joined(bv, mv, label))[0] + 1)
+
+
+def _curve_points(bv, mv, label):
+    """The isochrone's points, filled in to no more than FIT_CURVE_STEP apart
+    wherever the line runs on, so that the distance from a star to the
+    nearest point is the distance to the line."""
+    join = _joined(bv, mv, label)
+    if not join.any():
+        return bv.copy(), mv.copy()
+    d = np.hypot(np.diff(bv), np.diff(mv))
+    n = np.where(join, np.ceil(d / FIT_CURVE_STEP), 1).astype(int)
+    extra = np.maximum(n - 1, 0)
+    seg = np.repeat(np.arange(len(n)), extra)
+    k = np.arange(len(seg)) - np.repeat(np.cumsum(extra) - extra, extra) + 1
+    t = k / n[seg]
+    x = bv[seg] + t * (bv[seg + 1] - bv[seg])
+    y = mv[seg] + t * (mv[seg + 1] - mv[seg])
+    return np.concatenate([bv, x]), np.concatenate([mv, y])
+
+
+def _fit_arrays(stars, ebv_shift=0.0):
+    """Dereddened colour and magnitude of the stars, and their errors with
+    the floors added - with E(B-V) ebv_shift higher than the value used."""
+    c = stars["BV_corr"].to_numpy(float) - ebv_shift
+    m = stars["Mag_V_corr"].to_numpy(float) - R_V * ebv_shift
+    sc = np.hypot(stars["BV_cal_err"].to_numpy(float), FIT_COLOUR_FLOOR)
+    sm = np.hypot(stars["Mag_V_cal_err"].to_numpy(float), FIT_MAG_FLOOR)
+    return c, m, sc, sm
+
+
+def _distances2(points, c, m, sc, sm, mus):
+    """How far every star is from an isochrone slid to each distance modulus
+    in mus: the squared distance to its nearest point, counted in the star's
+    own errors and capped at FIT_D2_CAP. An array (len(mus), number of stars).
+
+    The isochrone's points nearest each star are found in a tree, in units of
+    the typical errors; the distance is then measured, in the star's own
+    errors, to each of the FIT_NEIGHBOURS nearest, and the smallest kept.
+    """
+    px, py = points
+    gc, gm = float(np.median(sc)), float(np.median(sm))
+    tree = cKDTree(np.column_stack([px / gc, py / gm]))
+    k = min(FIT_NEIGHBOURS, len(px))
+    mus = np.atleast_1d(np.asarray(mus, float))
+    n = len(c)
+    out = np.empty((len(mus), n))
+    per = max(1, 2_000_000 // max(n * k, 1))     # distance moduli at a time, to bound memory
+    for i0 in range(0, len(mus), per):
+        mu = mus[i0:i0 + per]
+        # the stars slid up instead of the isochrone down: V0 - mu against M_V
+        qx = np.tile(c, len(mu))
+        qy = (m[None, :] - mu[:, None]).ravel()
+        q = np.column_stack([qx / gc, qy / gm])
+        try:
+            _, j = tree.query(q, k=k, workers=-1)
+        except TypeError:                          # scipy before 1.6
+            _, j = tree.query(q, k=k)
+        j = np.asarray(j).reshape(len(qx), k)
+        dx = (px[j] - qx[:, None]) / np.tile(sc, len(mu))[:, None]
+        dy = (py[j] - qy[:, None]) / np.tile(sm, len(mu))[:, None]
+        out[i0:i0 + len(mu)] = np.min(dx * dx + dy * dy, axis=1).reshape(len(mu), n)
+    return np.minimum(out, FIT_D2_CAP)
+
+
+def _grid(points, ages, c, m, sc, sm, mus, counts=None):
+    """S[age, mu], the capped squared distances summed over the stars, for
+    every age and distance modulus; with resampling counts also
+    Sb[age, mu, resampling], the same sum with each star counted as often
+    as it was drawn."""
+    S = np.empty((len(ages), len(mus)))
+    Sb = None if counts is None else np.empty((len(ages), len(mus), len(counts)))
+    for i, a in enumerate(ages):
+        D2 = _distances2(points[a], c, m, sc, sm, mus)
+        S[i] = D2.sum(axis=1)
+        if counts is not None:
+            Sb[i] = D2 @ counts.T
+    return S, Sb
+
+
+def grid_fit(points, ages, c, m, sc, sm, mu_cat, counts=None):
+    """The age and distance modulus with the smallest S: every age given,
+    distance moduli within FIT_MU_RANGE of the catalogue's - first in steps
+    of 0.05 mag, then of 0.01 mag around what that first pass found, for the
+    stars as measured and for each resampling of them."""
+    ages = np.asarray(ages, float)
+    coarse = mu_cat + np.arange(-FIT_MU_RANGE, FIT_MU_RANGE + 1e-9, 0.05)
+    S, Sb = _grid(points, ages, c, m, sc, sm, coarse, counts)
+    i, j = np.unravel_index(np.argmin(S), S.shape)
+    lo_i = hi_i = i
+    lo_mu = hi_mu = coarse[j]
+    if Sb is not None:
+        bi, bj = np.unravel_index(Sb.reshape(-1, Sb.shape[2]).argmin(axis=0), S.shape)
+        lo_i, hi_i = min(lo_i, bi.min()), max(hi_i, bi.max())
+        lo_mu, hi_mu = min(lo_mu, coarse[bj].min()), max(hi_mu, coarse[bj].max())
+    sel = np.arange(max(lo_i - 2, 0), min(hi_i + 3, len(ages)))
+    fine = np.arange(max(lo_mu - 0.1, coarse[0]), min(hi_mu + 0.1, coarse[-1]) + 1e-9, 0.01)
+    Sf, Sbf = _grid(points, ages[sel], c, m, sc, sm, fine, counts)
+    i, j = np.unravel_index(np.argmin(Sf), Sf.shape)
+    out = {"log_age": float(ages[sel][i]), "mu": float(fine[j]), "S_min": float(Sf[i, j]),
+           "age_edge": len(ages) > 1 and ages[sel][i] in (ages[0], ages[-1]),
+           "mu_edge": abs(fine[j] - mu_cat) > FIT_MU_RANGE - 0.03,
+           "map": (ages, coarse, S)}
+    if Sbf is not None:
+        bi, bj = np.unravel_index(Sbf.reshape(-1, Sbf.shape[2]).argmin(axis=0), Sf.shape)
+        out["boot_log_age"] = ages[sel][bi]
+        out["boot_mu"] = fine[bj]
+    return out
+
+
+def turnoff(bv, mv, label):
+    """The turnoff of an isochrone, (B-V, M_V): its bluest main-sequence point,
+    where the stars that are running out of hydrogen in their cores leave
+    the main sequence. None if it has no main sequence."""
+    ms = np.where(label == 1)[0]
+    if not len(ms):
+        return None
+    i = ms[np.argmin(bv[ms])]
+    return float(bv[i]), float(mv[i])
+
+
+def turnoff_coverage(v0, v0_to):
+    """Whether these stars can give an age, for a turnoff at V0 = v0_to:
+    ('good' | 'weak' | 'none', and why).
+
+    The diagram changes with age only around the turnoff, so an age needs
+    stars there: TURNOFF_MIN_STARS within half a magnitude of it. It is
+    'good' when there are also stars on the main sequence below it and
+    stars past it (subgiants and giants), and 'weak' when one side is
+    nearly empty.
+    """
+    near = int(np.sum(np.abs(v0 - v0_to) <= 0.5))
+    below = int(np.sum((v0 > v0_to + 0.5) & (v0 <= v0_to + 2.0)))
+    past = int(np.sum(v0 < v0_to - 0.5))
+    where = (f"turnoff at V0 = {v0_to:.2f}: {near} stars within 0.5 mag of it, "
+             f"{below} on the main sequence below it, {past} brighter")
+    if near < TURNOFF_MIN_STARS:
+        if v0.max() < v0_to - 0.5:
+            why = "the turnoff is fainter than every star measured"
+        elif v0.min() > v0_to + 0.5:
+            why = "the turnoff is brighter than every star measured - its stars are probably saturated"
+        else:
+            why = f"only {near} stars at the turnoff, fewer than {TURNOFF_MIN_STARS}"
+        return "none", f"{why} ({where})"
+    if below < 5 or past < 3:
+        return "weak", f"few stars {'below' if below < 5 else 'past'} the turnoff ({where})"
+    return "good", where
+
+
+def fit_selection(cluster, mu_cat):
+    """The members, renumbered, and which of them go into the fit: unsaturated,
+    clear of neighbours (crowded_or_misshapen), measured to FIT_MAX_BV_ERR in
+    B-V and FIT_MAX_V_ERR in V, and no fainter than FIT_FAINTEST_MV at the
+    catalogue distance. Also a line saying how many were left out, and why."""
+    t = cluster.reset_index(drop=True)
+    finite = (np.isfinite(t["BV_corr"].to_numpy(float))
+              & np.isfinite(t["Mag_V_corr"].to_numpy(float)))
+    unsat = ~t["Saturated"].astype(bool).to_numpy() & finite
+    keep = crowded_or_misshapen(t, quiet=True)
+    clean = unsat & (np.ones(len(t), bool) if keep is None else np.asarray(keep, bool))
+    precise = (clean & (t["BV_cal_err"].to_numpy(float) <= FIT_MAX_BV_ERR)
+               & (t["Mag_V_cal_err"].to_numpy(float) <= FIT_MAX_V_ERR))
+    use = precise & (t["Mag_V_corr"].to_numpy(float) - mu_cat <= FIT_FAINTEST_MV)
+    why = (f"{len(t)} members; left out: {int((~unsat).sum())} saturated or unmeasured, "
+           f"{int((unsat & ~clean).sum())} crowded or misshapen, "
+           f"{int((clean & ~precise).sum())} with a B-V error above {FIT_MAX_BV_ERR:g} "
+           f"or a V error above {FIT_MAX_V_ERR:g}, {int((precise & ~use).sum())} fainter "
+           f"than M_V = {FIT_FAINTEST_MV:g}; {int(use.sum())} in the fit")
+    return t, use, why
+
+
+def horizontal_branch_distance(t, use, feh, mu_cat, rgb_bv):
+    """Distance modulus from the horizontal branch, for a globular whose
+    turnoff is out of reach, or None.
+
+    Horizontal-branch stars burn helium in their cores, and all have about
+    the same brightness in V where the branch is level - from the RR Lyrae
+    gap redward - at M_V(HB) = HB_MV_SLOPE [Fe/H] + HB_MV_ZERO. This is the
+    standard candle the Harris catalogue's own distances come from, so this
+    is a check of these measurements against it rather than an independent
+    distance.
+
+    The stars taken are members in the fit sample bluer than the giant
+    branch (by 0.08 mag, at that brightness) and within HB_WINDOW of where
+    the catalogue distance puts the branch. Blueward of B-V0 = 0 the branch
+    turns down - hotter stars are fainter in V - so stars there are used only
+    if there are not enough redder ones, with a warning. V0(HB) is their
+    median; the error given is the error of the median.
+    """
+    c = t["BV_corr"].to_numpy(float)
+    v0 = t["Mag_V_corr"].to_numpy(float)
+    mv_hb = HB_MV_SLOPE * feh + HB_MV_ZERO
+    expected = mu_cat + mv_hb
+    red_edge = rgb_bv - 0.08 if rgb_bv is not None and np.isfinite(rgb_bv) else 0.6
+    cand = use & (c > -0.3) & (c < red_edge) & (np.abs(v0 - expected) < HB_WINDOW)
+    level = cand & (c >= 0.0)
+    if level.sum() >= HB_MIN_STARS:
+        chosen, caveat = level, ""
+    elif cand.sum() >= HB_MIN_STARS:
+        chosen = cand
+        caveat = ("only blue horizontal-branch stars: they are fainter in V than the "
+                  "level part of the branch, so this distance comes out too large")
+    else:
+        return None
+    vals = v0[chosen]
+    v_hb = float(np.median(vals))
+    err = 1.2533 * float(np.std(vals, ddof=1)) / np.sqrt(len(vals))
+    return {"mu": v_hb - mv_hb, "err": err, "v0_hb": v_hb, "mv_hb": mv_hb,
+            "n": int(chosen.sum()), "mask": chosen, "caveat": caveat}
+
+
+def _distance_pc(mu):
+    return 10.0 ** (np.asarray(mu, float) / 5.0 + 1.0)
+
+
+def gaia_parallax_distance(members, wcs_G, shape):
+    """The cluster's parallax from Gaia DR3, from its catalogue members in the
+    frame: those with a Gaia star within 1 arcsec and a RUWE below
+    GAIA_RUWE_MAX, averaged with weights 1/error^2 and 3-sigma clipping, and
+    corrected for Gaia's zero point. A dict (plx, err in mas; n), or None."""
+    centre, radius = field_centre_and_radius(wcs_G, shape)
+    try:
+        res = Vizier(columns=["RA_ICRS", "DE_ICRS", "Plx", "e_Plx", "RUWE", "Gmag"],
+                     column_filters={"Gmag": "<18"}, row_limit=-1).query_region(
+            SkyCoord(centre.ra, centre.dec), radius=radius * u.deg, catalog="I/355/gaiadr3")
+        g = res[0].to_pandas()
+        gsky = SkyCoord(g["RA_ICRS"].to_numpy(float) * u.deg, g["DE_ICRS"].to_numpy(float) * u.deg)
+        msky = SkyCoord(members["RA"].to_numpy(float) * u.deg,
+                        members["DEC"].to_numpy(float) * u.deg)
+        j, sep, _ = msky.match_to_catalog_sky(gsky)
+        p = g.iloc[j[sep.arcsec < 1.0]]
+        p = p[np.isfinite(p["Plx"]) & (p["e_Plx"] > 0) & (p["RUWE"] < GAIA_RUWE_MAX)]
+    except Exception as exc:
+        print(f"[age] Gaia parallaxes unavailable ({exc})", flush=True)
+        return None
+    x, e = p["Plx"].to_numpy(float), p["e_Plx"].to_numpy(float)
+    use = np.ones(len(x), bool)
+    for _ in range(10):
+        if use.sum() < 5:
+            return None
+        w = 1.0 / e[use] ** 2
+        mean = float(np.sum(w * x[use]) / np.sum(w))
+        new = np.abs(x - mean) < 3.0 * e
+        if np.array_equal(new, use):
+            break
+        use = new
+    stat = float(1.0 / np.sqrt(np.sum(1.0 / e[use] ** 2)))
+    return {"plx": mean - GAIA_PLX_ZERO_POINT, "err": float(np.hypot(stat, GAIA_PLX_SYSTEMATIC)),
+            "n": int(use.sum()),
+            "source": f"Gaia DR3 parallaxes of {int(use.sum())} members"}
+
+
+def globular_parallax(vb_row):
+    """The cluster's mean Gaia EDR3 parallax from Vasiliev & Baumgardt 2021,
+    as a dict like gaia_parallax_distance's, or None."""
+    try:
+        plx, err = float(vb_row["plx"]), float(vb_row["e_plx"])
+    except Exception:
+        return None
+    if not (np.isfinite(plx) and np.isfinite(err)) or plx <= 0:
+        return None
+    return {"plx": plx, "err": float(np.hypot(err, GAIA_PLX_SYSTEMATIC)), "n": None,
+            "source": "Gaia EDR3 mean parallax, Vasiliev & Baumgardt 2021"}
+
+
+def _plx_distance(gaia):
+    """Distance and its 1-sigma range, in pc, from a parallax dict."""
+    plx, err = gaia["plx"], gaia["err"]
+    hi = 1000.0 / (plx - err) if plx > err else np.inf
+    return 1000.0 / plx, 1000.0 / (plx + err), hi
+
+
+def _age_text(log_age):
+    gyr = 10.0 ** (log_age - 9.0)
+    return f"{gyr:.2f} Gyr" if gyr < 1 else f"{gyr:.1f} Gyr"
+
+
+def fit_age_and_distance(cluster, cluster_type, iso, mh, ebv, mu_cat, lit, gaia,
+                         out_dir, name, show, note):
+    """The cluster's age and distance from the PARSEC isochrones, as far as
+    these stars allow. Writes its figures and tables into out_dir and its
+    numbers into the run summary, and returns them (or None).
+
+    WHAT IS COMPARED
+    Each isochrone, for the cluster's metallicity, is slid down the magnitude
+    axis by a trial distance modulus mu and laid over the members in the
+    dereddened diagram, (B-V)0 against V0. For every star the distance to the
+    nearest point of the isochrone is counted in the star's own errors, with
+    a floor (FIT_COLOUR_FLOOR, FIT_MAG_FLOOR) for the calibration and the
+    models, squared, and capped at FIT_D2_CAP. The cap is what makes this
+    work on a real cluster: a field star, an unresolved binary or a blue
+    straggler then costs the same whichever isochrone is tried, and cannot
+    drag the fit far towards itself. The sum over the stars, S, is smallest
+    for the age and distance that fit best. Unresolved binaries lying close
+    above the main sequence still pull it a little: on simulated clusters
+    with 20-30 percent binaries the distance came out 1-3 percent short.
+
+    WHEN THERE IS AN AGE
+    The diagram changes with age only around the turnoff, where the stars
+    that are running out of hydrogen leave the main sequence. So an age is
+    given only when the members reach the turnoff - see turnoff_coverage().
+    Otherwise, saying why:
+      an open cluster gets a distance only, from its main sequence, fitted
+      at the catalogue age (Cantat-Gaudin et al. 2020) - below the turnoff
+      the main sequence hardly depends on the age
+      a globular gets a distance only, from its horizontal branch (see
+      horizontal_branch_distance()), with a 12 Gyr isochrone drawn for
+      comparison, not fitted
+    Globulars are tried only from GC_MIN_LOGAGE up, and only on the main
+    sequence, subgiant and giant branches: the colour of their horizontal
+    branch depends on how much mass each star lost, which the models fix.
+
+    THE UNCERTAINTIES
+    The fit is repeated on FIT_BOOTSTRAP resamplings of the stars - the same
+    number of stars, drawn with repetition - and the 16th to 84th percentiles
+    of the ages and distances found are the ranges given: the scatter from
+    which stars happen to have been measured. E(B-V) is not fitted but held
+    at the value given; the fit is repeated with it FIT_EBV_STEP higher and
+    lower to show how much that matters. The metallicity is the model grid's
+    nearest to the one given.
+    """
+    import matplotlib.pyplot as plt
+    print("\n[age] age and distance from the isochrones", flush=True)
+    t, use, why = fit_selection(cluster, mu_cat)
+    print("   " + why, flush=True)
+    note("age and distance - stars: " + why)
+    n = int(use.sum())
+    if n < FIT_MIN_STARS:
+        msg = (f"only {n} members are measured well enough for the fit (it needs "
+               f"{FIT_MIN_STARS}) - no age or distance")
+        loud("AGE AND DISTANCE: " + msg)
+        note("age and distance: " + msg)
+        return None
+
+    curves, mh_used = isochrones_at(iso, mh)
+    labels = (0, 1, 2, 3) if cluster_type == "G" else tuple(range(8))
+
+    def part(a):
+        bv, mv, lab = curves[a]
+        k = np.isin(lab, labels)
+        return bv[k], mv[k], lab[k]
+
+    points = {a: _curve_points(*part(a)) for a in curves if len(part(a)[0]) >= 2}
+    all_ages = np.array(sorted(points))
+    ages = all_ages[all_ages >= GC_MIN_LOGAGE - 1e-6] if cluster_type == "G" else all_ages
+
+    def nearest_age(a):
+        return float(all_ages[np.argmin(np.abs(all_ages - a))])
+
+    stars = t[use]
+    c, m, sc, sm = _fit_arrays(stars)
+    rng = np.random.default_rng(FIT_SEED)
+    counts = rng.multinomial(n, np.full(n, 1.0 / n), size=FIT_BOOTSTRAP)
+    res = {"mh": mh, "mh_used": mh_used, "ebv": ebv, "n": n, "method": None,
+           "age_status": "none", "draw": [], "hb": None, "warnings": []}
+    print(f"   PARSEC isochrones at [M/H] = {mh_used:+.2f} (asked {mh:+.2f}), "
+          f"E(B-V) = {ebv:g} held fixed; {n} stars, {FIT_BOOTSTRAP} resamplings",
+          flush=True)
+
+    # Can these stars give an age at all? A globular's turnoff is so faint
+    # that it is checked first, at 12 Gyr and the catalogue distance.
+    try_age, why_not = True, ""
+    if cluster_type == "G":
+        to = turnoff(*curves[nearest_age(GC_DEFAULT_LOGAGE)])
+        status, why_not = turnoff_coverage(m, mu_cat + to[1])
+        try_age = status != "none"
+
+    if try_age:
+        t0 = time.time()
+        fit = grid_fit(points, ages, c, m, sc, sm, mu_cat, counts)
+        print(f"   {len(ages)} ages x {int(round(2 * FIT_MU_RANGE / 0.05)) + 1} distances, "
+              f"then a finer grid: {time.time() - t0:.0f} s", flush=True)
+        to = turnoff(*curves[fit["log_age"]])
+        status, why = turnoff_coverage(m, fit["mu"] + to[1])
+        if status != "none":
+            res.update(method="age and distance", age_status=status, age_why=why, fit=fit,
+                       log_age=fit["log_age"], mu=fit["mu"], turnoff=to,
+                       log_age_range=tuple(np.percentile(fit["boot_log_age"], [16, 84])),
+                       mu_range=tuple(np.percentile(fit["boot_mu"], [16, 84])))
+            if fit["age_edge"]:
+                res["warnings"].append("the best age is at the edge of the ages tried")
+        else:
+            why_not = why
+
+    if res["method"] is None and cluster_type != "G":
+        a_fix, a_src = lit.get("log_age"), lit.get("log_age_source", "")
+        if a_fix is None:
+            a_fix, a_src = fit["log_age"], "the best fit, which these stars do not pin down"
+        a_fix = nearest_age(a_fix)
+        fit = grid_fit(points, [a_fix], c, m, sc, sm, mu_cat, counts)
+        res.update(method="distance at a fixed age", age_why=why_not, fit=fit,
+                   log_age=a_fix, age_source=a_src, mu=fit["mu"],
+                   mu_range=tuple(np.percentile(fit["boot_mu"], [16, 84])))
+
+    if cluster_type == "G":
+        # the giant branch's colour at the horizontal branch's brightness, from
+        # the 12 Gyr isochrone, sets the red edge of the horizontal branch
+        bv12, mv12, lab12 = curves[nearest_age(GC_DEFAULT_LOGAGE)]
+        feh = mh - ALPHA_ENHANCEMENT_MH
+        mv_hb = HB_MV_SLOPE * feh + HB_MV_ZERO
+        rgb_bv = None
+        r = np.where(lab12 == 3)[0]
+        if len(r) > 1:
+            r = r[:np.argmin(mv12[r]) + 1]          # up to the tip of the branch
+            o = np.argsort(mv12[r])
+            rgb_bv = float(np.interp(mv_hb, mv12[r][o], bv12[r][o]))
+        hb = horizontal_branch_distance(t, use, feh, mu_cat, rgb_bv)
+        res["hb"] = hb
+        if res["method"] is None:
+            if hb is None:
+                msg = (f"no age: {why_not}. No distance either: fewer than {HB_MIN_STARS} "
+                       "horizontal-branch stars were found")
+                loud("AGE AND DISTANCE: " + msg)
+                note("age and distance: " + msg)
+                return None
+            res.update(method="distance from the horizontal branch", age_why=why_not,
+                       log_age=nearest_age(GC_DEFAULT_LOGAGE), mu=hb["mu"],
+                       mu_range=(hb["mu"] - hb["err"], hb["mu"] + hb["err"]),
+                       age_source="for comparison only, not fitted")
+
+    # E(B-V) a little higher and lower
+    shifts = {}
+    for sgn in (+1, -1):
+        dE = sgn * FIT_EBV_STEP
+        if res["method"] == "distance from the horizontal branch":
+            shifts[dE] = (None, res["mu"] - R_V * dE)
+            continue
+        cs, ms_, scs, sms = _fit_arrays(stars, dE)
+        a_try = ages if res["method"] == "age and distance" else [res["log_age"]]
+        f2 = grid_fit(points, a_try, cs, ms_, scs, sms, mu_cat)
+        shifts[dE] = (f2["log_age"] if res["method"] == "age and distance" else None, f2["mu"])
+    res["ebv_shifts"] = shifts
+    if res.get("fit") is not None and res["fit"]["mu_edge"]:
+        res["warnings"].append(f"the best distance is at the edge of those tried (catalogue "
+                               f"distance modulus +- {FIT_MU_RANGE:g})")
+
+    # ---- the numbers, on the screen and in the run summary ----
+    res["distance"] = float(_distance_pc(res["mu"]))
+    res["distance_range"] = tuple(float(x) for x in _distance_pc(res["mu_range"]))
+    lines = [f"AGE AND DISTANCE ({res['method']})",
+             f"PARSEC isochrones, [M/H] = {mh_used:+.2f} (asked {mh:+.2f}); "
+             f"E(B-V) = {ebv:g} held fixed; {n} stars in the fit"]
+    d, (d1, d2) = res["distance"], res["distance_range"]
+    if res["method"] == "age and distance":
+        a1, a2 = res["log_age_range"]
+        lines.append(f"age       {_age_text(res['log_age'])}   ({_age_text(a1)} - {_age_text(a2)})"
+                     f"   log t = {res['log_age']:.2f}"
+                     + ("   WEAK - see the turnoff below" if res["age_status"] == "weak" else ""))
+    else:
+        lines.append(f"age       not fitted: {res['age_why']}")
+        lines.append(f"          isochrone drawn at {_age_text(res['log_age'])} "
+                     f"({res.get('age_source', '')})")
+    lines.append(f"distance  {d:,.0f} pc   ({d1:,.0f} - {d2:,.0f})   mu = {res['mu']:.2f}")
+    if res["method"] == "age and distance":
+        lines.append(f"          (ranges: 16th-84th percentiles of {FIT_BOOTSTRAP} resamplings)")
+        lines.append("turnoff   " + res["age_why"])
+    elif res["method"] == "distance from the horizontal branch":
+        hb = res["hb"]
+        lines.append(f"          {hb['n']} horizontal-branch stars, V0 = {hb['v0_hb']:.2f}, "
+                     f"M_V(HB) = {hb['mv_hb']:.2f}; error of the median only")
+        if hb["caveat"]:
+            lines.append("          WARNING: " + hb["caveat"])
+    for dE, (a_s, mu_s) in sorted(res["ebv_shifts"].items(), reverse=True):
+        lines.append(f"with E(B-V) {ebv + dE:.3f}: "
+                     + (f"{_age_text(a_s)}, " if a_s is not None else "")
+                     + f"{_distance_pc(mu_s):,.0f} pc")
+    if cluster_type == "G" and res["method"] == "age and distance" and res["hb"] is not None:
+        hb = res["hb"]
+        lines.append(f"horizontal branch, as a check: {_distance_pc(hb['mu']):,.0f} pc "
+                     f"({hb['n']} stars, V0 = {hb['v0_hb']:.2f})")
+    if gaia is not None:
+        gd, g1, g2 = _plx_distance(gaia)
+        lines.append(f"Gaia      {gd:,.0f} pc   ({g1:,.0f} - {g2:,.0f})   parallax "
+                     f"{gaia['plx']:.3f} +- {gaia['err']:.3f} mas, {gaia['source']}")
+    lines += lit.get("lines", [])
+    for w in res["warnings"]:
+        lines.append("WARNING: " + w)
+    loud("\n".join(lines))
+    for line in lines:
+        note("  " + line)
+
+    # ---- tables ----
+    a_draw, mu_draw = res["log_age"], res["mu"]
+    bvd, mvd, labd = part(a_draw)
+    shown = np.isfinite(t["BV_corr"].to_numpy(float)) & np.isfinite(t["Mag_V_corr"].to_numpy(float))
+    ca, ma, sca, sma = _fit_arrays(t)
+    d2 = np.full(len(t), np.nan)
+    ok = shown & np.isfinite(sca) & np.isfinite(sma)
+    if ok.any():
+        d2[ok] = _distances2(_curve_points(bvd, mvd, labd), ca[ok], ma[ok], sca[ok],
+                             sma[ok], [mu_draw])[0]
+    table = t.copy()
+    table["Fit_used"] = use
+    table["Fit_d2_capped"] = d2
+    if res["hb"] is not None:
+        table["HB_star"] = res["hb"]["mask"]
+    table.to_csv(os.path.join(out_dir, "isochrone_fit_stars.csv"), index=False)
+    best = iso[np.isclose(iso["MH"].to_numpy(float), mh_used)
+               & np.isclose(iso["logAge"].to_numpy(float), a_draw)].copy()
+    best["V0"] = best["MV"] + mu_draw
+    best["V_observed"] = best["V0"] + R_V * ebv
+    best["BV_observed"] = best["BV"] + ebv
+    best.to_csv(os.path.join(out_dir, "isochrone_best.csv"), index=False)
+    if res.get("fit") is not None:
+        g_ages, g_mus, g_S = res["fit"]["map"]
+        A, MU = np.meshgrid(g_ages, g_mus, indexing="ij")
+        pd.DataFrame({"logAge": A.ravel(), "mu": MU.ravel(),
+                      "distance_pc": _distance_pc(MU.ravel()), "S": g_S.ravel()}).to_csv(
+            os.path.join(out_dir, "isochrone_fit_grid.csv"), index=False)
+
+    # ---- the diagram ----
+    c_all, v_all = t["BV_corr"].to_numpy(float), t["Mag_V_corr"].to_numpy(float)
+    drawn = shown & ~t["Saturated"].astype(bool).to_numpy() & (
+        t["BV_cal_err"].to_numpy(float) <= CMD_MAX_BV_ERR)
+    fig, ax = plt.subplots(figsize=(7, 8))
+    ax.scatter(c_all[drawn & ~use], v_all[drawn & ~use], s=5, color="0.7",
+               label="members not in the fit")
+    ax.scatter(c_all[use], v_all[use], s=7, color="black", label=f"in the fit ({n})")
+    if res["hb"] is not None:
+        hb = res["hb"]
+        ax.scatter(c_all[hb["mask"]], v_all[hb["mask"]], s=30, facecolor="none",
+                   edgecolor="tab:blue", lw=1, label=f"horizontal branch ({hb['n']})")
+        ax.axhline(hb["v0_hb"], color="tab:blue", ls=":", lw=1)
+
+    def draw(a, mu, **kw):
+        bv, mv, lab = part(a)
+        for k, seg in enumerate(_segments(bv, mv, lab)):
+            ax.plot(bv[seg], mv[seg] + mu, **(kw if k == 0 else {**kw, "label": None}))
+
+    if res["method"] == "age and distance":
+        f = res["fit"]
+        for q, colour in ((0, "tab:blue"), (1, "tab:orange")):
+            a_q = nearest_age(res["log_age_range"][q])
+            if a_q != res["log_age"]:
+                # each drawn at the distance that suits it best
+                S_a = _grid(points, [a_q], c, m, sc, sm,
+                            mu_cat + np.arange(-FIT_MU_RANGE, FIT_MU_RANGE + 1e-9, 0.01))[0][0]
+                mu_q = mu_cat - FIT_MU_RANGE + 0.01 * int(np.argmin(S_a))
+                draw(a_q, mu_q, color=colour, ls="--", lw=1,
+                     label=f"{_age_text(a_q)} ({'16th' if q == 0 else '84th'} percentile)")
+        draw(res["log_age"], res["mu"], color="tab:red", lw=1.6,
+             label=f"best: {_age_text(res['log_age'])}, {res['distance']:,.0f} pc")
+        ax.plot(res["turnoff"][0], res["turnoff"][1] + res["mu"], marker="*", ms=14,
+                color="gold", mec="black", ls="none", label="turnoff")
+    elif res["method"] == "distance at a fixed age":
+        draw(res["log_age"], res["mu"], color="tab:red", lw=1.6,
+             label=f"{_age_text(res['log_age'])} (age fixed), {res['distance']:,.0f} pc")
+    else:
+        draw(res["log_age"], res["mu"], color="tab:red", lw=1.2, ls="--",
+             label=f"{_age_text(res['log_age'])}, not fitted, at {res['distance']:,.0f} pc")
+    if drawn.any():
+        lo, hi = np.percentile(c_all[drawn], [1, 99])
+        pad = 0.15 * (hi - lo) + 0.1
+        ax.set_xlim(max(min(lo - pad, -0.5), -1.0), min(max(hi + pad, 2.0), 3.0))
+        ax.set_ylim(np.nanmax(v_all[drawn]) + 0.3, np.nanmin(v_all[drawn]) - 0.5)
+    else:
+        ax.invert_yaxis()
+    ax.set_xlabel("(B−V)₀  colour, dereddened")
+    ax.set_ylabel("V₀  apparent magnitude, extinction removed")
+    sec = ax.secondary_yaxis("right", functions=(lambda V, mu_=res["mu"]: V - mu_,
+                                                 lambda M, mu_=res["mu"]: M + mu_))
+    sec.set_ylabel(f"M_V  at the fitted distance (μ = {res['mu']:.2f})")
+    head = (f"{_age_text(res['log_age'])}, " if res["method"] == "age and distance" else "")
+    plot_path = os.path.join(out_dir, f"CMD_isochrone_fit_{n}.png")
+    stem = os.path.splitext(os.path.basename(plot_path))[0]
+    ax.set_title(f"{stem}\n{name}    {head}{res['distance']:,.0f} pc    "
+                 f"[M/H] = {mh_used:+.2f}    E(B−V) = {ebv:.3f}", fontsize=10)
+    ax.legend(loc="lower left", fontsize=8)
+    fig.tight_layout()
+    fig.savefig(plot_path, dpi=150)
+    if show:
+        plt.show()
+    plt.close(fig)
+    print(f"[age] saved {plot_path}")
+    note(f"plot {os.path.basename(plot_path)}")
+
+    # ---- how well every age and distance fits ----
+    if res.get("fit") is not None:
+        g_ages, g_mus, g_S = res["fit"]["map"]
+        f = res["fit"]
+        fig, ax = plt.subplots(figsize=(7, 5.5))
+        if len(g_ages) > 1:
+            dS = g_S - g_S.min()
+            pcm = ax.pcolormesh(_distance_pc(g_mus), 10.0 ** (g_ages - 9.0), dS,
+                                shading="nearest", cmap="viridis_r", vmin=0,
+                                vmax=max(float(np.percentile(dS, 50)), 1.0))
+            fig.colorbar(pcm, ax=ax, label="S − S_min   (0 = the best fit)")
+            ax.set_yscale("log")
+            pairs, k = np.unique(np.column_stack([f["boot_log_age"], f["boot_mu"]]),
+                                 axis=0, return_counts=True)
+            ax.scatter(_distance_pc(pairs[:, 1]), 10.0 ** (pairs[:, 0] - 9.0), s=6 * k,
+                       facecolor="none", edgecolor="white", lw=0.8,
+                       label="best fit of each resampling")
+            ax.plot(res["distance"], 10.0 ** (res["log_age"] - 9.0), marker="*", ms=14,
+                    color="red", mec="black", ls="none", label="best fit")
+            ax.set_ylabel("age [Gyr]")
+        else:
+            ax.plot(_distance_pc(g_mus), g_S[0] - g_S[0].min(), color="black")
+            ax.axvspan(*res["distance_range"], color="0.85",
+                       label="16th-84th percentile of the resamplings")
+            ax.axvline(res["distance"], color="tab:red", label="best fit")
+            ax.set_ylabel("S − S_min   (0 = the best fit)")
+        if gaia is not None:
+            ax.axvline(_plx_distance(gaia)[0], color="tab:green", ls="--", lw=1,
+                       label="Gaia parallax")
+        ax.set_xlabel("distance [pc]")
+        map_path = os.path.join(out_dir, "isochrone_fit_map.png")
+        ax.set_title(f"isochrone_fit_map\n{name}    [M/H] = {mh_used:+.2f}    "
+                     f"E(B−V) = {ebv:.3f}", fontsize=10)
+        ax.legend(loc="best", fontsize=8)
+        fig.tight_layout()
+        fig.savefig(map_path, dpi=150)
+        if show:
+            plt.show()
+        plt.close(fig)
+        print(f"[age] saved {map_path}")
+    return res
+
+
 # ------------------- Plots -------------------
 
 def write_cmd(subset, plot_path, name, distance, ebv, av, mu, show):
@@ -1864,6 +2708,8 @@ def parse_args(argv=None):
     p.add_argument("--radius-px", type=float, help="globulars, radius method: radius in pixels")
     p.add_argument("--prob-min", type=float, help="open clusters: minimum membership probability")
     p.add_argument("--catalogue", choices=["APASS", "GAIA"], help="calibration catalogue")
+    p.add_argument("--mh", type=float, help="metallicity [M/H] for the isochrones")
+    p.add_argument("--no-fit", action="store_true", help="leave out the age and distance fit")
     p.add_argument("--yes", action="store_true", help="accept every default without asking")
     p.add_argument("--no-show", action="store_true", help="save figures without opening windows")
     args, _unknown = p.parse_known_args(argv)   # Spyder may add its own arguments
@@ -1994,10 +2840,10 @@ def main(argv=None):
 
     print("Looking the cluster up...", flush=True)
     if cluster_type == "G":
-        _dist, _ebv, _size = globular_from_harris(cluster_name, aliases)
+        _dist, _ebv, _size, _extra = globular_from_harris(cluster_name, aliases)
         _source = "Harris catalogue"
     else:
-        _dist, _ebv, _size = open_cluster_from_dias(cluster_name, aliases)
+        _dist, _ebv, _size, _extra = open_cluster_from_dias(cluster_name, aliases)
         _source = "Dias catalogue"
 
     Cluster_distance = offered("distance", _dist, _source, " pc", ARGS.distance)
@@ -2008,7 +2854,36 @@ def main(argv=None):
           f"E(B-V) = {E_BV}, A_V = R_V x E(B-V) = {A_V:.3f}")
     note(f"distance {Cluster_distance:g} pc, mu = {mu:.3f}, E(B-V) = {E_BV}, A_V = {A_V:.3f}")
 
+    # The metallicity, for the age and distance fit - asked only when the
+    # isochrone table is there to use it.
+    iso, MH = None, None
+    if FIT_ISOCHRONES and not ARGS.no_fit:
+        iso = load_isochrones()
+    if iso is not None:
+        feh = _extra.get("feh")
+        if cluster_type == "G":
+            mh_value = None if feh is None else feh + ALPHA_ENHANCEMENT_MH
+            mh_source = ("" if feh is None else
+                         f"Harris catalogue [Fe/H] = {feh:+.2f}, plus {ALPHA_ENHANCEMENT_MH:g} "
+                         "for a globular's extra alpha elements")
+        elif feh is not None:
+            mh_value, mh_source = feh, "Dias catalogue [Fe/H]"
+        else:
+            mh_value, mh_source = 0.0, "solar - the Dias catalogue gives none"
+        if mh_value is None and ARGS.mh is None and _accept_defaults():
+            print("   metallicity [M/H]: not in the catalogue - the age and distance fit "
+                  "is left out (give --mh to include it)")
+            note("age and distance: left out - no metallicity")
+            iso = None
+        else:
+            MH = offered("metallicity [M/H]", mh_value, mh_source, "", ARGS.mh)
+            as_offered = (ARGS.mh is None and mh_value is not None
+                          and abs(MH - float(f"{mh_value:.4g}")) < 1e-9)
+            note(f"metallicity for the isochrones: [M/H] = {MH:g} "
+                 f"({mh_source if as_offered else 'given'})")
+
     membership, radius_px, cg_name, vb_row = None, None, None, None
+    cg_params = {}
     prob_min = ARGS.prob_min if ARGS.prob_min is not None else OPEN_CLUSTER_PROB_MIN
     if cluster_type == "G":
         vb_row = vasiliev_baumgardt_row(aliases)
@@ -2045,6 +2920,8 @@ def main(argv=None):
         except RuntimeError as e:
             stop(str(e))
         note(f"membership: Cantat-Gaudin & Anders 2020, {cg_name}, prob >= {prob_min:g}")
+        if iso is not None:
+            cg_params = cantat_gaudin_cluster(cg_name)
 
     # ---------------- Photometry ----------------
     dfG, infoG, G_img = run_photometry(file_G, "G", out_dir)
@@ -2261,6 +3138,39 @@ def main(argv=None):
                                    cluster_name, show,
                                    centre_px if cluster_type == "G" else None)
                 print(f"[plot] wrote {map_path}")
+
+    # ---------------- Age and distance ----------------
+    if iso is not None:
+        lit = {"lines": []}
+        if cluster_type != "G":
+            if cg_params.get("log_age") is not None:
+                lit["log_age"], lit["log_age_source"] = (cg_params["log_age"],
+                                                         "Cantat-Gaudin et al. 2020")
+            elif _extra.get("log_age") is not None:
+                lit["log_age"], lit["log_age_source"] = _extra["log_age"], "Dias catalogue"
+            bits = ([_age_text(cg_params["log_age"])] if "log_age" in cg_params else []) + \
+                   ([f"{cg_params['distance']:,.0f} pc"] if "distance" in cg_params else [])
+            if bits:
+                lit["lines"].append("catalogue Cantat-Gaudin et al. 2020: " + ", ".join(bits))
+            bits = ([_age_text(_extra["log_age"])] if "log_age" in _extra else []) + \
+                   ([f"{_dist:,.0f} pc"] if _dist is not None else [])
+            if bits:
+                lit["lines"].append("catalogue Dias: " + ", ".join(bits))
+        elif _dist is not None:
+            lit["lines"].append(f"catalogue Harris 2010: {_dist:,.0f} pc")
+        lit["lines"].append(f"the other diagrams use {Cluster_distance:,.0f} pc, as given above")
+        try:
+            if cluster_type == "G":
+                gaia = globular_parallax(vb_row) if vb_row is not None else None
+            else:
+                gaia = gaia_parallax_distance(members, wcs_G, shape)
+            fit_age_and_distance(cluster, cluster_type, iso, MH, E_BV, mu, lit, gaia,
+                                 out_dir, cluster_name, show, note)
+        except Exception as exc:
+            import traceback
+            traceback.print_exc()
+            loud(f"AGE AND DISTANCE FAILED ({exc}).\nEverything before it is saved.")
+            note(f"age and distance: failed ({exc})")
 
     with open(os.path.join(out_dir, "run_summary.txt"), "w", encoding="utf-8") as fh:
         fh.write("\n".join(summary) + "\n")

@@ -38,10 +38,11 @@ Grid
             accepted by the form but are clamped to the same tracks)
 log(age/yr): 6.6 to 7.9 in steps of 0.1, then 8.00 to 10.12 in steps of 0.02
             (121 values)
-Total     : 1694 isochrones, 346256 rows (file size about 2.6 MB)
+Total     : 1694 isochrones, 375964 rows, 29700 of them label 0
+            (file size about 2.9 MB)
 
 The form was queried with the [M/H] input (not Z), one request per [M/H] and
-age range (28 requests). The raw outputs are kept in raw/ next to the script.
+age range (28 requests). The raw outputs are not in the repository.
 
 Columns
 -------
