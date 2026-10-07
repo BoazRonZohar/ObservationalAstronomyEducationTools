@@ -365,10 +365,15 @@ HB_MV_SLOPE = 0.16
 HB_MV_ZERO = 0.84
 HB_MIN_STARS = 5
 HB_WINDOW = 1.0           # mag either side of where the catalogue puts the branch
+HB_HALF_WIDTH = 0.5       # mag either side of the branch itself, once it is found
+HB_MAX_BV_ERR = 0.25      # looser than for the fit: the branch is blue, where a
+HB_MAX_V_ERR = 0.10       # colour camera's blue channel is weakest
 
-# Gaia DR3 parallaxes come out too small by 0.017 mas on average (Lindegren et
-# al. 2021), and errors common to stars a few arcminutes apart do not average
-# away; 0.011 mas is the size Vasiliev & Baumgardt (2021) found for them.
+# Open clusters' Gaia DR3 parallaxes: they come out too small by 0.017 mas on
+# average (Lindegren et al. 2021), and errors common to stars a few arcminutes
+# apart do not average away; 0.011 mas is the size Vasiliev & Baumgardt (2021)
+# found for them. (A globular's mean parallax is taken from Vasiliev &
+# Baumgardt as published, with both already in it - see globular_parallax().)
 GAIA_PLX_ZERO_POINT = -0.017   # mas
 GAIA_PLX_SYSTEMATIC = 0.011    # mas
 GAIA_RUWE_MAX = 1.4            # Gaia's own limit for a well-behaved single-star solution
@@ -2059,7 +2064,8 @@ def turnoff(bv, mv, label):
 
 def turnoff_coverage(v0, v0_to):
     """Whether these stars can give an age, for a turnoff at V0 = v0_to:
-    ('good' | 'weak' | 'none', and why).
+    'good', 'weak' or 'none', and a dict of the numbers with, for 'weak'
+    and 'none', why.
 
     The diagram changes with age only around the turnoff, so an age needs
     stars there: TURNOFF_MIN_STARS within half a magnitude of it. It is
@@ -2067,29 +2073,38 @@ def turnoff_coverage(v0, v0_to):
     stars past it (subgiants and giants), and 'weak' when one side is
     nearly empty.
     """
-    near = int(np.sum(np.abs(v0 - v0_to) <= 0.5))
-    below = int(np.sum((v0 > v0_to + 0.5) & (v0 <= v0_to + 2.0)))
-    past = int(np.sum(v0 < v0_to - 0.5))
-    where = (f"turnoff at V0 = {v0_to:.2f}: {near} stars within 0.5 mag of it, "
-             f"{below} on the main sequence below it, {past} brighter")
-    if near < TURNOFF_MIN_STARS:
+    info = {"v0_to": float(v0_to), "why": "",
+            "near": int(np.sum(np.abs(v0 - v0_to) <= 0.5)),
+            "below": int(np.sum((v0 > v0_to + 0.5) & (v0 <= v0_to + 2.0))),
+            "past": int(np.sum(v0 < v0_to - 0.5))}
+    if info["near"] < TURNOFF_MIN_STARS:
         if v0.max() < v0_to - 0.5:
-            why = "the turnoff is fainter than every star measured"
+            info["why"] = "fainter than every star measured"
         elif v0.min() > v0_to + 0.5:
-            why = "the turnoff is brighter than every star measured - its stars are probably saturated"
+            info["why"] = "brighter than every star measured - its stars are probably saturated"
         else:
-            why = f"only {near} stars at the turnoff, fewer than {TURNOFF_MIN_STARS}"
-        return "none", f"{why} ({where})"
-    if below < 5 or past < 3:
-        return "weak", f"few stars {'below' if below < 5 else 'past'} the turnoff ({where})"
-    return "good", where
+            info["why"] = f"reached by only {info['near']} stars, fewer than {TURNOFF_MIN_STARS}"
+        return "none", info
+    if info["below"] < 5 or info["past"] < 3:
+        info["why"] = f"few stars {'below' if info['below'] < 5 else 'past'} it"
+        return "weak", info
+    return "good", info
+
+
+def _turnoff_text(info, full=True):
+    text = f"V0 = {info['v0_to']:.2f}, {info['near']} stars within 0.5 mag of it"
+    if full:
+        text += f", {info['below']} on the main sequence below it, {info['past']} brighter"
+    return text
 
 
 def fit_selection(cluster, mu_cat):
-    """The members, renumbered, and which of them go into the fit: unsaturated,
+    """The members, renumbered; which of them go into the fit: unsaturated,
     clear of neighbours (crowded_or_misshapen), measured to FIT_MAX_BV_ERR in
     B-V and FIT_MAX_V_ERR in V, and no fainter than FIT_FAINTEST_MV at the
-    catalogue distance. Also a line saying how many were left out, and why."""
+    catalogue distance; which are measured well enough to look for the
+    horizontal branch among (the same, but to HB_MAX_BV_ERR and HB_MAX_V_ERR);
+    and a line saying how many were left out of the fit, and why."""
     t = cluster.reset_index(drop=True)
     finite = (np.isfinite(t["BV_corr"].to_numpy(float))
               & np.isfinite(t["Mag_V_corr"].to_numpy(float)))
@@ -2099,15 +2114,17 @@ def fit_selection(cluster, mu_cat):
     precise = (clean & (t["BV_cal_err"].to_numpy(float) <= FIT_MAX_BV_ERR)
                & (t["Mag_V_cal_err"].to_numpy(float) <= FIT_MAX_V_ERR))
     use = precise & (t["Mag_V_corr"].to_numpy(float) - mu_cat <= FIT_FAINTEST_MV)
+    branch = (clean & (t["BV_cal_err"].to_numpy(float) <= HB_MAX_BV_ERR)
+              & (t["Mag_V_cal_err"].to_numpy(float) <= HB_MAX_V_ERR))
     why = (f"{len(t)} members; left out: {int((~unsat).sum())} saturated or unmeasured, "
            f"{int((unsat & ~clean).sum())} crowded or misshapen, "
            f"{int((clean & ~precise).sum())} with a B-V error above {FIT_MAX_BV_ERR:g} "
            f"or a V error above {FIT_MAX_V_ERR:g}, {int((precise & ~use).sum())} fainter "
            f"than M_V = {FIT_FAINTEST_MV:g}; {int(use.sum())} in the fit")
-    return t, use, why
+    return t, use, branch, why
 
 
-def horizontal_branch_distance(t, use, feh, mu_cat, rgb_bv):
+def horizontal_branch_distance(t, sample, feh, mu_cat, rgb_bv):
     """Distance modulus from the horizontal branch, for a globular whose
     turnoff is out of reach, or None.
 
@@ -2118,30 +2135,49 @@ def horizontal_branch_distance(t, use, feh, mu_cat, rgb_bv):
     is a check of these measurements against it rather than an independent
     distance.
 
-    The stars taken are members in the fit sample bluer than the giant
-    branch (by 0.08 mag, at that brightness) and within HB_WINDOW of where
-    the catalogue distance puts the branch. Blueward of B-V0 = 0 the branch
-    turns down - hotter stars are fainter in V - so stars there are used only
-    if there are not enough redder ones, with a warning. V0(HB) is their
-    median; the error given is the error of the median.
+    The stars looked at are the members in sample that are bluer than the
+    giant branch (by 0.15 mag, at the branch's brightness) and within
+    HB_WINDOW of where the catalogue distance puts the branch. That cut
+    still lets in a few giants and asymptotic-branch stars, so the branch is
+    found as the median V0, taken again over the stars within HB_HALF_WIDTH
+    of it until it stops moving. Blueward of B-V0 = 0 the branch turns down
+    - hotter stars are fainter in V - so V0(HB) is then the same median over
+    the stars at B-V0 >= 0, if there are HB_MIN_STARS of them; otherwise
+    over all of them, with a warning. The error given is the error of the
+    median.
     """
     c = t["BV_corr"].to_numpy(float)
     v0 = t["Mag_V_corr"].to_numpy(float)
     mv_hb = HB_MV_SLOPE * feh + HB_MV_ZERO
     expected = mu_cat + mv_hb
-    red_edge = rgb_bv - 0.08 if rgb_bv is not None and np.isfinite(rgb_bv) else 0.6
-    cand = use & (c > -0.3) & (c < red_edge) & (np.abs(v0 - expected) < HB_WINDOW)
-    level = cand & (c >= 0.0)
-    if level.sum() >= HB_MIN_STARS:
-        chosen, caveat = level, ""
-    elif cand.sum() >= HB_MIN_STARS:
-        chosen = cand
-        caveat = ("only blue horizontal-branch stars: they are fainter in V than the "
-                  "level part of the branch, so this distance comes out too large")
-    else:
+    red_edge = rgb_bv - 0.15 if rgb_bv is not None and np.isfinite(rgb_bv) else 0.5
+    cand = sample & (c > -0.4) & (c < red_edge) & (np.abs(v0 - expected) < HB_WINDOW)
+
+    def settle(mask, v=None):
+        """The median V0 of the stars in mask within HB_HALF_WIDTH of it."""
+        if mask.sum() < HB_MIN_STARS:
+            return None, mask
+        v = float(np.median(v0[mask])) if v is None else v
+        for _ in range(20):
+            near = mask & (np.abs(v0 - v) < HB_HALF_WIDTH)
+            if near.sum() < HB_MIN_STARS:
+                return None, near
+            v_new = float(np.median(v0[near]))
+            if abs(v_new - v) < 1e-4:
+                break
+            v = v_new
+        return v_new, near
+
+    v_all, branch = settle(cand)
+    if v_all is None:
         return None
+    v_hb, chosen = settle(cand & (c >= 0.0), v_all)
+    caveat = ""
+    if v_hb is None:
+        v_hb, chosen = v_all, branch
+        caveat = ("too few stars at B-V0 >= 0: the bluer stars used are fainter in V "
+                  "than the level part of the branch, so this distance comes out too large")
     vals = v0[chosen]
-    v_hb = float(np.median(vals))
     err = 1.2533 * float(np.std(vals, ddof=1)) / np.sqrt(len(vals))
     return {"mu": v_hb - mv_hb, "err": err, "v0_hb": v_hb, "mv_hb": mv_hb,
             "n": int(chosen.sum()), "mask": chosen, "caveat": caveat}
@@ -2190,14 +2226,20 @@ def gaia_parallax_distance(members, wcs_G, shape):
 
 def globular_parallax(vb_row):
     """The cluster's mean Gaia EDR3 parallax from Vasiliev & Baumgardt 2021,
-    as a dict like gaia_parallax_distance's, or None."""
+    as a dict like gaia_parallax_distance's, or None.
+
+    Used as published: they corrected each star's parallax for the zero point
+    (Lindegren et al. 2021) before averaging, and their uncertainty already
+    includes the errors common to neighbouring stars. They also found those
+    corrected parallaxes about 0.01 mas too large on average; that is not
+    applied here, but for a distant globular it is a tenth of the parallax."""
     try:
         plx, err = float(vb_row["plx"]), float(vb_row["e_plx"])
     except Exception:
         return None
     if not (np.isfinite(plx) and np.isfinite(err)) or plx <= 0:
         return None
-    return {"plx": plx, "err": float(np.hypot(err, GAIA_PLX_SYSTEMATIC)), "n": None,
+    return {"plx": plx, "err": err, "n": None,
             "source": "Gaia EDR3 mean parallax, Vasiliev & Baumgardt 2021"}
 
 
@@ -2210,7 +2252,7 @@ def _plx_distance(gaia):
 
 def _age_text(log_age):
     gyr = 10.0 ** (log_age - 9.0)
-    return f"{gyr:.2f} Gyr" if gyr < 1 else f"{gyr:.1f} Gyr"
+    return f"{1000 * gyr:.0f} Myr" if gyr < 1 else f"{gyr:.1f} Gyr"
 
 
 def fit_age_and_distance(cluster, cluster_type, iso, mh, ebv, mu_cat, lit, gaia,
@@ -2259,7 +2301,7 @@ def fit_age_and_distance(cluster, cluster_type, iso, mh, ebv, mu_cat, lit, gaia,
     """
     import matplotlib.pyplot as plt
     print("\n[age] age and distance from the isochrones", flush=True)
-    t, use, why = fit_selection(cluster, mu_cat)
+    t, use, branch_ok, why = fit_selection(cluster, mu_cat)
     print("   " + why, flush=True)
     note("age and distance - stars: " + why)
     n = int(use.sum())
@@ -2297,11 +2339,14 @@ def fit_age_and_distance(cluster, cluster_type, iso, mh, ebv, mu_cat, lit, gaia,
 
     # Can these stars give an age at all? A globular's turnoff is so faint
     # that it is checked first, at 12 Gyr and the catalogue distance.
-    try_age, why_not = True, ""
+    try_age, why_not, age_notes = True, "", []
     if cluster_type == "G":
         to = turnoff(*curves[nearest_age(GC_DEFAULT_LOGAGE)])
-        status, why_not = turnoff_coverage(m, mu_cat + to[1])
-        try_age = status != "none"
+        status, info = turnoff_coverage(m, mu_cat + to[1])
+        if status == "none":
+            try_age, why_not = False, "the turnoff is " + info["why"]
+            age_notes.append("at 12 Gyr and the catalogue distance: turnoff at "
+                             + _turnoff_text(info, full=False))
 
     if try_age:
         t0 = time.time()
@@ -2309,26 +2354,41 @@ def fit_age_and_distance(cluster, cluster_type, iso, mh, ebv, mu_cat, lit, gaia,
         print(f"   {len(ages)} ages x {int(round(2 * FIT_MU_RANGE / 0.05)) + 1} distances, "
               f"then a finer grid: {time.time() - t0:.0f} s", flush=True)
         to = turnoff(*curves[fit["log_age"]])
-        status, why = turnoff_coverage(m, fit["mu"] + to[1])
+        status, info = turnoff_coverage(m, fit["mu"] + to[1])
         if status != "none":
-            res.update(method="age and distance", age_status=status, age_why=why, fit=fit,
+            res.update(method="age and distance", age_status=status, fit=fit,
+                       age_why="at " + _turnoff_text(info)
+                       + (f" - {info['why']}, so the age is less certain"
+                          if status == "weak" else ""),
                        log_age=fit["log_age"], mu=fit["mu"], turnoff=to,
                        log_age_range=tuple(np.percentile(fit["boot_log_age"], [16, 84])),
                        mu_range=tuple(np.percentile(fit["boot_mu"], [16, 84])))
             if fit["age_edge"]:
                 res["warnings"].append("the best age is at the edge of the ages tried")
         else:
-            why_not = why
+            # The best isochrone puts its turnoff where there are no stars:
+            # with no turnoff to hold it, the fit can slide to any age whose
+            # main sequence passes through the stars - typically a young one,
+            # whose main sequence also runs up through the blue stragglers.
+            why_not = "these stars do not pin it down"
+            age_notes.append(f"best free fit: {_age_text(fit['log_age'])}, turnoff at "
+                             + _turnoff_text(info, full=False))
 
     if res["method"] is None and cluster_type != "G":
-        a_fix, a_src = lit.get("log_age"), lit.get("log_age_source", "")
-        if a_fix is None:
-            a_fix, a_src = fit["log_age"], "the best fit, which these stars do not pin down"
-        a_fix = nearest_age(a_fix)
+        a_lit, a_src = lit.get("log_age"), lit.get("log_age_source", "")
+        if a_lit is None:
+            a_fix, a_src = fit["log_age"], "the best free fit"
+        else:
+            a_fix = nearest_age(a_lit)
+            if abs(a_fix - a_lit) > 0.005:
+                a_src = f"the model age nearest the {_age_text(a_lit)} of {a_src}"
         fit = grid_fit(points, [a_fix], c, m, sc, sm, mu_cat, counts)
+        _, info = turnoff_coverage(m, fit["mu"] + turnoff(*curves[a_fix])[1])
+        age_notes.append(f"at {_age_text(a_fix)}: turnoff at " + _turnoff_text(info, full=False))
         res.update(method="distance at a fixed age", age_why=why_not, fit=fit,
-                   log_age=a_fix, age_source=a_src, mu=fit["mu"],
+                   log_age=a_fix, age_source=a_src + ", age held fixed", mu=fit["mu"],
                    mu_range=tuple(np.percentile(fit["boot_mu"], [16, 84])))
+    res["age_notes"] = age_notes
 
     if cluster_type == "G":
         # the giant branch's colour at the horizontal branch's brightness, from
@@ -2342,12 +2402,12 @@ def fit_age_and_distance(cluster, cluster_type, iso, mh, ebv, mu_cat, lit, gaia,
             r = r[:np.argmin(mv12[r]) + 1]          # up to the tip of the branch
             o = np.argsort(mv12[r])
             rgb_bv = float(np.interp(mv_hb, mv12[r][o], bv12[r][o]))
-        hb = horizontal_branch_distance(t, use, feh, mu_cat, rgb_bv)
+        hb = horizontal_branch_distance(t, branch_ok, feh, mu_cat, rgb_bv)
         res["hb"] = hb
         if res["method"] is None:
             if hb is None:
-                msg = (f"no age: {why_not}. No distance either: fewer than {HB_MIN_STARS} "
-                       "horizontal-branch stars were found")
+                msg = (f"no age - {why_not} ({'; '.join(age_notes)}). No distance either: "
+                       f"fewer than {HB_MIN_STARS} horizontal-branch stars were found")
                 loud("AGE AND DISTANCE: " + msg)
                 note("age and distance: " + msg)
                 return None
@@ -2385,7 +2445,8 @@ def fit_age_and_distance(cluster, cluster_type, iso, mh, ebv, mu_cat, lit, gaia,
                      f"   log t = {res['log_age']:.2f}"
                      + ("   WEAK - see the turnoff below" if res["age_status"] == "weak" else ""))
     else:
-        lines.append(f"age       not fitted: {res['age_why']}")
+        lines.append(f"age       not fitted - {res['age_why']}")
+        lines += ["          " + a for a in res["age_notes"]]
         lines.append(f"          isochrone drawn at {_age_text(res['log_age'])} "
                      f"({res.get('age_source', '')})")
     lines.append(f"distance  {d:,.0f} pc   ({d1:,.0f} - {d2:,.0f})   mu = {res['mu']:.2f}")
@@ -2422,14 +2483,14 @@ def fit_age_and_distance(cluster, cluster_type, iso, mh, ebv, mu_cat, lit, gaia,
     bvd, mvd, labd = part(a_draw)
     shown = np.isfinite(t["BV_corr"].to_numpy(float)) & np.isfinite(t["Mag_V_corr"].to_numpy(float))
     ca, ma, sca, sma = _fit_arrays(t)
-    d2 = np.full(len(t), np.nan)
+    dist2 = np.full(len(t), np.nan)
     ok = shown & np.isfinite(sca) & np.isfinite(sma)
     if ok.any():
-        d2[ok] = _distances2(_curve_points(bvd, mvd, labd), ca[ok], ma[ok], sca[ok],
-                             sma[ok], [mu_draw])[0]
+        dist2[ok] = _distances2(_curve_points(bvd, mvd, labd), ca[ok], ma[ok], sca[ok],
+                                sma[ok], [mu_draw])[0]
     table = t.copy()
     table["Fit_used"] = use
-    table["Fit_d2_capped"] = d2
+    table["Fit_d2_capped"] = dist2
     if res["hb"] is not None:
         table["HB_star"] = res["hb"]["mask"]
     table.to_csv(os.path.join(out_dir, "isochrone_fit_stars.csv"), index=False)
@@ -2460,8 +2521,10 @@ def fit_age_and_distance(cluster, cluster_type, iso, mh, ebv, mu_cat, lit, gaia,
                    edgecolor="tab:blue", lw=1, label=f"horizontal branch ({hb['n']})")
         ax.axhline(hb["v0_hb"], color="tab:blue", ls=":", lw=1)
 
-    def draw(a, mu, **kw):
+    def draw(a, mu, last_stage=7, **kw):
         bv, mv, lab = part(a)
+        keep = lab <= last_stage
+        bv, mv, lab = bv[keep], mv[keep], lab[keep]
         for k, seg in enumerate(_segments(bv, mv, lab)):
             ax.plot(bv[seg], mv[seg] + mu, **(kw if k == 0 else {**kw, "label": None}))
 
@@ -2474,7 +2537,8 @@ def fit_age_and_distance(cluster, cluster_type, iso, mh, ebv, mu_cat, lit, gaia,
                 S_a = _grid(points, [a_q], c, m, sc, sm,
                             mu_cat + np.arange(-FIT_MU_RANGE, FIT_MU_RANGE + 1e-9, 0.01))[0][0]
                 mu_q = mu_cat - FIT_MU_RANGE + 0.01 * int(np.argmin(S_a))
-                draw(a_q, mu_q, color=colour, ls="--", lw=1,
+                # only up to the subgiant branch: the part that changes with age
+                draw(a_q, mu_q, last_stage=2, color=colour, ls="--", lw=1,
                      label=f"{_age_text(a_q)} ({'16th' if q == 0 else '84th'} percentile)")
         draw(res["log_age"], res["mu"], color="tab:red", lw=1.6,
              label=f"best: {_age_text(res['log_age'])}, {res['distance']:,.0f} pc")
@@ -2527,7 +2591,7 @@ def fit_age_and_distance(cluster, cluster_type, iso, mh, ebv, mu_cat, lit, gaia,
             pairs, k = np.unique(np.column_stack([f["boot_log_age"], f["boot_mu"]]),
                                  axis=0, return_counts=True)
             ax.scatter(_distance_pc(pairs[:, 1]), 10.0 ** (pairs[:, 0] - 9.0), s=6 * k,
-                       facecolor="none", edgecolor="white", lw=0.8,
+                       facecolor="none", edgecolor="black", lw=0.6,
                        label="best fit of each resampling")
             ax.plot(res["distance"], 10.0 ** (res["log_age"] - 9.0), marker="*", ms=14,
                     color="red", mec="black", ls="none", label="best fit")
@@ -2545,7 +2609,9 @@ def fit_age_and_distance(cluster, cluster_type, iso, mh, ebv, mu_cat, lit, gaia,
         map_path = os.path.join(out_dir, "isochrone_fit_map.png")
         ax.set_title(f"isochrone_fit_map\n{name}    [M/H] = {mh_used:+.2f}    "
                      f"E(B−V) = {ebv:.3f}", fontsize=10)
-        ax.legend(loc="best", fontsize=8)
+        # under the axes, so it covers nothing
+        ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.13), ncol=3, fontsize=8,
+                  frameon=False)
         fig.tight_layout()
         fig.savefig(map_path, dpi=150)
         if show:
@@ -3157,7 +3223,7 @@ def main(argv=None):
             if bits:
                 lit["lines"].append("catalogue Dias: " + ", ".join(bits))
         elif _dist is not None:
-            lit["lines"].append(f"catalogue Harris 2010: {_dist:,.0f} pc")
+            lit["lines"].append(f"catalogue Harris: {_dist:,.0f} pc")
         lit["lines"].append(f"the other diagrams use {Cluster_distance:,.0f} pc, as given above")
         try:
             if cluster_type == "G":
