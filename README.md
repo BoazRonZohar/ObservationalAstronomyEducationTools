@@ -29,7 +29,7 @@ and the Python scripts run on your own machine, on your own files.
 | Frames with no plate solution — stacked in AIP4Win, WCS lost | `Photometry_Transit_Eclipse_Mono_Star_List.py` |
 | A night of frames and a suspicion something moved | `Find_Moving_Objects.py` |
 | Colour frames that need combining before anything else | `Stack_Color_Frames.py` |
-| B and V frames of a star cluster | `Cluster_CMD.py` |
+| B and V frames of a star cluster, or colour-camera frames of one | `Cluster_CMD.py` |
 | B, V, R and H-alpha frames of a spiral galaxy | `Star_Formation_All_In_One.py` |
 
 ---
@@ -203,6 +203,29 @@ leaves out those with another source inside their own aperture; a map of the
 frame beside each shows where the two differ. On M12 the second removes most of
 the core; on M67 it removes a handful. Which one to believe is a judgement about
 the cluster, and both are kept for it.
+
+It also takes colour-camera data: the three channels split into separate files,
+or the raw three-plane frames, which it groups by night and exposure time, aligns
+and median-combines. A colour camera's green channel is not Johnson V, so the
+calibration carries colour terms. It is fitted to every catalogue star in the
+field that is matched, unsaturated and well measured — APASS by default, Gaia's
+synthetic photometry when APASS has too few — and the run stops rather than draw
+a diagram on fewer than five. The plate solution in the header is checked
+against Gaia first and repaired when it is off; one set of split channels here
+was 40 pixels out, and without the repair no bright star in it matched the
+catalogue.
+
+Before anything is plotted, it checks that the colours point the right way: the
+instrumental b−v must rise with the catalogue's B−V. On a colour camera a falling
+one means the image was flipped before the colours were separated, so blue and
+red are swapped; the red channel is then measured as blue, and the run says so
+loudly. On filter frames it means the files are mislabelled, and the run stops.
+
+The diagram is in absolute magnitude M_V, with the observed V on the right-hand
+axis. Each run writes into a new folder beside the frames,
+`result_CMD_<cluster>_<date>_<time>`, with `run_summary.txt` holding every number
+it used, and every question can also be answered on the command line
+(`python Cluster_CMD.py --help`), so a run can be repeated exactly.
 
 ---
 
