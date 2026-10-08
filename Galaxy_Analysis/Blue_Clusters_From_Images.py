@@ -346,6 +346,15 @@ def roles_in_text(text):
     low = str(text).lower()
     return {role for role, pattern in _PATTERNS.items() if pattern.search(low)}
 
+_DIFFERENCE = re.compile(
+    r"(?:h[\s_-]*al(?:pha|fa)|(?<![a-z0-9])ha)[^/\\]*?-\s*(?:r|rp|rc)(?![a-z0-9])"
+    r"|minus|cont[\s_-]*sub", re.I)
+
+def is_difference_name(name):
+    """True when a file name says the frame is one filter minus another, such
+    as H-alpha with the R continuum taken off ("M83_HaX12-R.fts")."""
+    return bool(_DIFFERENCE.search(str(name)))
+
 def role_from_header(header):
     """The role named by the filter keyword, or None when there is no such keyword."""
     for key in ("FILTER", "FILTER1", "FILTNAME", "INSFILTE"):
@@ -391,7 +400,11 @@ def inspect(path):
     role = role_from_header(header)
     source = "the filter keyword in the header"
 
-    if role is None:
+    if role is None and is_difference_name(os.path.basename(path)):
+        # "HaX12-R" is H-alpha with 12 x R taken off: a product, not a frame
+        # through either filter. Naming it R would put it in as the continuum.
+        source = "the file name (a difference of two frames - not used)"
+    elif role is None:
         found = roles_in_text(os.path.basename(path))
         source = "the file name"
         if len(found) == 1:
@@ -4527,18 +4540,42 @@ def local_background(data):
 
 def star_width(data, x, y, half=12, sky=0.0):
     """Width at half maximum of one source, in pixels, measured on the data as
-    it is, after its local sky is taken off."""
+    it is, after its local sky is taken off.
+
+    A two-dimensional Gaussian is fitted to the stamp, and the FWHM is
+    2.355 x sqrt(sigma_x sigma_y). Counting the pixels above half the peak, as
+    this did before, can only return whole and half pixels: a median over a
+    hundred stars then sits on 4.00 whether the seeing is 3.6 or 4.4 px. The
+    pixel count is still the answer when the fit fails.
+    """
     x, y = int(round(x)), int(round(y))
     if x - half < 0 or y - half < 0 or x + half >= data.shape[1] or y + half >= data.shape[0]:
         return np.nan
-    cut = data[y - half:y + half, x - half:x + half] - sky
+    cut = np.asarray(data[y - half:y + half, x - half:x + half], float) - sky
     peak = cut.max()
     if not np.isfinite(peak) or peak <= 0:
         return np.nan
     idx = np.argwhere(cut > peak / 2)
     if not len(idx):
         return np.nan
-    return np.mean([np.ptp(idx[:, 1]) + 1, np.ptp(idx[:, 0]) + 1])
+    coarse = np.mean([np.ptp(idx[:, 1]) + 1, np.ptp(idx[:, 0]) + 1])
+    try:
+        from astropy.modeling import models, fitting
+        yy, xx = np.mgrid[0:cut.shape[0], 0:cut.shape[1]]
+        py, px = np.unravel_index(np.argmax(cut), cut.shape)
+        s0 = max(coarse / 2.355, 0.5)
+        g = models.Gaussian2D(peak, px, py, s0, s0, 0.0) + models.Const2D(0.0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            fit = fitting.LevMarLSQFitter()(g, xx, yy, np.nan_to_num(cut))
+        sx, sy = abs(fit.x_stddev_0.value), abs(fit.y_stddev_0.value)
+        fwhm = 2.3548 * np.sqrt(sx * sy)
+        if (np.isfinite(fwhm) and fit.amplitude_0.value > 0 and 0.5 < fwhm < 2 * half
+                and abs(fit.x_mean_0.value - px) < 2 and abs(fit.y_mean_0.value - py) < 2):
+            return float(fwhm)
+    except Exception:
+        pass
+    return float(coarse)
 
 
 def _xy_of(table):
@@ -5702,7 +5739,7 @@ def write_summary(path, v):
         f"galaxy              {v['obj_name']}",
         f"B frame             {v['fits_file_B']}",
         f"V frame             {v['fits_file_V']}",
-    ] + [f"combined            {n}" for n in v["combined_note"]] + [
+    ] + [f"input               {n}" for n in v["combined_note"]] + [
         f"distance            {v['distance']:.3f} Mpc (distance modulus {v['mu']:.3f})",
         f"E(B-V)              {v['E_BV']:.4f}   A_V = {v['A_V']:.3f}",
         f"plate solution      {v['wcs_note']}",

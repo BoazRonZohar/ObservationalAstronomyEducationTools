@@ -204,6 +204,15 @@ def roles_in_text(text):
     low = str(text).lower()
     return {role for role, pattern in _PATTERNS.items() if pattern.search(low)}
 
+_DIFFERENCE = re.compile(
+    r"(?:h[\s_-]*al(?:pha|fa)|(?<![a-z0-9])ha)[^/\\]*?-\s*(?:r|rp|rc)(?![a-z0-9])"
+    r"|minus|cont[\s_-]*sub", re.I)
+
+def is_difference_name(name):
+    """True when a file name says the frame is one filter minus another, such
+    as H-alpha with the R continuum taken off ("M83_HaX12-R.fts")."""
+    return bool(_DIFFERENCE.search(str(name)))
+
 def role_from_header(header):
     """The role named by the filter keyword, or None when there is no such keyword."""
     for key in ("FILTER", "FILTER1", "FILTNAME", "INSFILTE"):
@@ -249,7 +258,11 @@ def inspect(path):
     role = role_from_header(header)
     source = "the filter keyword in the header"
 
-    if role is None:
+    if role is None and is_difference_name(os.path.basename(path)):
+        # "HaX12-R" is H-alpha with 12 x R taken off: a product, not a frame
+        # through either filter. Naming it R would put it in as the continuum.
+        source = "the file name (a difference of two frames - not used)"
+    elif role is None:
         found = roles_in_text(os.path.basename(path))
         source = "the file name"
         if len(found) == 1:
