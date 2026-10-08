@@ -204,6 +204,24 @@ def roles_in_text(text):
     low = str(text).lower()
     return {role for role, pattern in _PATTERNS.items() if pattern.search(low)}
 
+_DIFFERENCE = re.compile(
+    r"(?:h[\s_-]*al(?:pha|fa)|(?<![a-z0-9])ha)[^/\\]*?-\s*(?:r|rp|rc)(?![a-z0-9])"
+    r"|minus|cont[\s_-]*sub", re.I)
+
+def is_difference_name(name):
+    """True when a file name says the frame is one filter minus another, such
+    as H-alpha with the R continuum taken off ("M83_HaX12-R.fts")."""
+    return bool(_DIFFERENCE.search(str(name)))
+
+_PRODUCT_HISTORY = re.compile(
+    r"multiplied\s+by|subtracted\b.*\.(?:fits?|fts)\b", re.I)
+
+def is_product_header(header):
+    """True when a HISTORY line says the frame was scaled by a factor or had
+    another FITS file subtracted from it. A constant sky ("Subtracted 9.0") does
+    not count."""
+    return any(_PRODUCT_HISTORY.search(line) for line in history_lines(header))
+
 def role_from_header(header):
     """The role named by the filter keyword, or None when there is no such keyword."""
     for key in ("FILTER", "FILTER1", "FILTNAME", "INSFILTE"):
@@ -249,7 +267,17 @@ def inspect(path):
     role = role_from_header(header)
     source = "the filter keyword in the header"
 
-    if role is None:
+    if is_product_header(header):
+        # The header says it is this frame scaled, or another frame taken off
+        # it ("Multiplied by 11.5", "Subtracted ...R_SUB_Median_of_3"): not a
+        # frame through one filter, whatever its name or FILTER keyword says.
+        role = None
+        source = "its history (a scaled or subtracted product - not used)"
+    elif role is None and is_difference_name(os.path.basename(path)):
+        # "HaX12-R" is H-alpha with 12 x R taken off: a product, not a frame
+        # through either filter. Naming it R would put it in as the continuum.
+        source = "the file name (a difference of two frames - not used)"
+    elif role is None:
         found = roles_in_text(os.path.basename(path))
         source = "the file name"
         if len(found) == 1:
@@ -274,9 +302,17 @@ def scan_folder(folder, recursive=True):
     found = []
     for root, dirs, files in os.walk(folder):
         # Do not walk into what an earlier run wrote.
-        dirs[:] = [d for d in dirs if d.lower() not in OUTPUT_FOLDERS]
+        # Every run now writes a folder of its own - result_CMD_<galaxy>_<date>,
+        # result_HII_..., result_StarFormation_... - so anything whose name
+        # starts with "result" is output, not data.
+        dirs[:] = [d for d in dirs if d.lower() not in OUTPUT_FOLDERS
+                   and not d.lower().startswith("result")]
         for name in sorted(files):
             if not name.lower().endswith(FITS_SUFFIXES):
+                continue
+            # What these tools write next to their results - a background-
+            # subtracted copy, a frame with a borrowed solution - is not data.
+            if re.search(r"_(bgsub|solved)\.fits?$", name, re.I):
                 continue
             path = os.path.join(root, name)
             try:
@@ -1441,11 +1477,17 @@ def lookup_distance(name):
         import astropy.units as u
 
         coord = SkyCoord.from_name(name)
-        hit = Vizier(columns=["**"], row_limit=5).query_region(
+        # "_r" is VizieR's own distance of each row from the position asked
+        # about. The rows come back in catalogue order, not nearest first, so
+        # without it the first row could be a neighbouring galaxy inside the
+        # search circle and its distance would be used without a word.
+        hit = Vizier(columns=["**", "_r"], row_limit=20).query_region(
             coord, radius=2 * u.arcmin, catalog=DISTANCE_CATALOG)
         if not hit:
             return None
         table = hit[0]
+        if "_r" in table.colnames and len(table) > 1:
+            table = table[np.argsort(np.asarray(table["_r"], dtype=float))]
         for col in ("Dist", "<Dist>"):
             if col in table.colnames:
                 value = float(table[col][0])
@@ -2384,6 +2426,17 @@ def frames_from_folder(folder, roles):
              for role in roles},
             to_combine, name)
 
+def header_number(header, keys):
+    """The first of these header keywords that holds a positive number, or None."""
+    for key in keys:
+        try:
+            value = float(header.get(key))
+        except (TypeError, ValueError):
+            continue
+        if value == value and value > 0:
+            return value
+    return None
+
 def load_frame(path, donor_path=None):
     """Open a FITS file and return the science image, its WCS and a bad-pixel mask.
 
@@ -2433,18 +2486,56 @@ def load_frame(path, donor_path=None):
         "exptime": float(header.get("EXPTIME", 1.0) or 1.0),
         "pixel_scale": header.get("PIXSCALE", None),
         "object": str(header.get("OBJECT", "?")),
+        # What the photometry needs to know about the detector, carried along
+        # so that a frame this pipeline writes still says it.
+        "saturate": header_number(header, ("SATURATE", "MAXLIN", "SATLEVEL")),
+        # Electrons per ADU. EGAIN first: on some cameras GAIN is the gain
+        # SETTING (51 on the Kinneret colour camera), not electrons per ADU.
+        "gain": next((g for g in (header_number(header, (k,)) for k in
+                                  ("EGAIN", "GAIN")) if g and g < 20), None),
+        "rdnoise": header_number(header, ("RDNOISE", "READNOIS", "RON")),
+        "ncombine": int(header_number(header, ("NCOMBINE",)) or 1),
+        "combtype": str(header.get("COMBTYPE", "")),
+        "date": str(header.get("DATE-OBS", "")),
     }
     hdul.close()
 
     if wcs is None and donor_path:
         reference, ref_wcs, _, ref_info = load_frame(donor_path)
         if ref_wcs is not None:
-            wcs, diag = wcs_from_reference(data, reference, ref_wcs)
+            try:
+                wcs, diag = wcs_from_reference(data, reference, ref_wcs)
+            except Exception as exc:
+                # astroalign finds no star pattern in common - typically a frame
+                # with the stars taken out, such as H-alpha minus continuum.
+                print("  {}: could not fit a plate solution against {} ({}: {})".format(
+                    os.path.basename(path), os.path.basename(donor_path),
+                    type(exc).__name__, exc), flush=True)
+                return data, None, bpm, info
             print(describe_wcs_fit(os.path.basename(path), diag))
             if info["pixel_scale"] is None:
                 info["pixel_scale"] = ref_info["pixel_scale"]
             if info["filter"] == "?":
                 info["filter"] = ref_info["filter"]
+            # A combined frame written by another program often keeps no header
+            # at all. The camera and the exposure length are those of the solved
+            # exposure it came from, so they are taken from there, and said so.
+            borrowed = []
+            for key, card in (("exptime", "EXPTIME"), ("saturate", "SATURATE"),
+                              ("gain", "GAIN"), ("rdnoise", "RDNOISE"),
+                              ("date", "DATE-OBS"), ("object", "OBJECT")):
+                if card in header or (key in ("saturate", "gain", "rdnoise")
+                                      and info[key] is not None):
+                    continue
+                if key == "object" and info[key] != "?":
+                    continue
+                if ref_info.get(key) not in (None, "", "?"):
+                    info[key] = ref_info[key]
+                    borrowed.append(card)
+            if borrowed:
+                print("  {}: no {} in its header; taken from {}".format(
+                    os.path.basename(path), ", ".join(borrowed),
+                    os.path.basename(donor_path)), flush=True)
 
     return data, wcs, bpm, info
 
@@ -2525,7 +2616,7 @@ def centre_on_stars(data, positions, box=15, max_move_px=6.0):
     """
     positions = np.asarray(positions, dtype=float)
     if not len(positions):
-        return positions, {"n_in": 0, "n_out": 0}
+        return positions, {"n_in": 0, "n_out": 0, "why": "no stars to centre"}
 
     ny, nx = data.shape
     half = box // 2
@@ -2598,7 +2689,35 @@ def combine_exposures(paths, donor_path=None, label="", band_rows=512,
         return reference, ref_wcs, ref_bpm, ref_info
 
     print("Combining {} {} exposures".format(len(paths), label or "frames"))
-    stack = [reference]
+    # Every exposure is scaled to the exposure time of the first before the
+    # median is taken. A median of a 60 s and a 120 s frame that were not
+    # scaled is neither of them: each pixel takes whichever value happens to
+    # fall in the middle. Before scaling, pixels at the detector's saturation
+    # level are blanked, so that a star saturated in the long exposures is
+    # measured from the short ones.
+    ref_exptime = float(ref_info.get("exptime") or 1.0)
+    sat_levels, sat_masks = [], []
+
+    def scaled(frame, info, name):
+        exptime = float(info.get("exptime") or ref_exptime)
+        ratio = ref_exptime / exptime
+        sat = info.get("saturate")
+        if sat:
+            frame = np.array(frame, dtype=np.float32, copy=True)
+            with np.errstate(invalid="ignore"):
+                hit = frame >= SATURATION_FRACTION * sat
+            frame[hit] = np.nan
+            sat_masks.append(hit)
+            sat_levels.append(sat * ratio)
+        else:
+            sat_levels.append(None)
+        if abs(ratio - 1.0) > 1e-6:
+            print("  {}: {:.0f} s, scaled by {:.3f} to {:.0f} s".format(
+                name, exptime, ratio, ref_exptime))
+            frame = frame * np.float32(ratio)
+        return frame
+
+    stack = [scaled(reference, ref_info, os.path.basename(paths[0]))]
     total_exptime = float(ref_info.get("exptime") or 0.0)
 
     for path in paths[1:]:
@@ -2627,7 +2746,7 @@ def combine_exposures(paths, donor_path=None, label="", band_rows=512,
             data = refine_alignment(reference, data, "  " + name,
                                     positions=positions)
 
-        stack.append(data)
+        stack.append(scaled(data, info, name))
         total_exptime += float(info.get("exptime") or 0.0)
 
     ny, nx = reference.shape
@@ -2638,13 +2757,57 @@ def combine_exposures(paths, donor_path=None, label="", band_rows=512,
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             combined[y0:y1] = np.nanmedian(band, axis=0)
+            # A pixel saturated in every exposure has nothing left to take the
+            # median of. It is set to the saturation level, so that it stays a
+            # bright pixel the photometry flags as saturated, not a hole.
+            if sat_masks:
+                hole = ~np.isfinite(combined[y0:y1])
+                hole &= np.any(np.stack([m[y0:y1] for m in sat_masks], axis=0), axis=0)
+                if hole.any():
+                    combined[y0:y1][hole] = max(s for s in sat_levels if s)
 
     print("  median of {} exposures, total exposure {:.0f}s, noise lower by about "
           "a factor of {:.1f}".format(len(stack), total_exptime, len(stack) ** 0.5))
 
+    # The median sits at the level of ONE exposure of the first frame's length,
+    # so that is what EXPTIME says. It used to say the total, which made the
+    # header claim several times the exposure the pixel values have. The total
+    # is kept in TOTEXP, and NCOMBINE says how many frames went in - the noise
+    # of a median of N frames is that of one frame with N x 2/pi times the gain.
     info = dict(ref_info)
-    info["exptime"] = total_exptime
+    info["exptime"] = ref_exptime
+    info["total_exptime"] = total_exptime
+    info["ncombine"] = len(stack)
+    info["combtype"] = "median"
+    if all(s for s in sat_levels):
+        # Pixels below the level of the shortest exposure came from at least
+        # one unsaturated frame.
+        info["saturate"] = max(sat_levels)
+    else:
+        info["saturate"] = None
+    # Scaling a longer exposure down lowers its noise along with its counts,
+    # as a higher gain would. Written so that GAIN x NCOMBINE is the gain of the
+    # total exposure expressed at this frame's level.
+    if info.get("gain"):
+        info["gain"] = float(info["gain"]) * total_exptime / ref_exptime / len(stack)
     return combined, ref_wcs, ref_bpm, info
+
+SATURATION_FRACTION = 0.8   # a pixel above this fraction of SATURATE counts as saturated
+
+def new_run_folder(base, tool, galaxy):
+    """A folder of its own for this run: result_<tool>_<galaxy>_<date>_<time>.
+
+    Every run used to write into the same place under the same names, so a
+    second run overwrote the first, and a run that stopped half way left the
+    previous run's files sitting beside its own, looking current. A new folder
+    each time means nothing a run reads or shows can be left over from another.
+    """
+    import datetime
+    name = re.sub(r"[^A-Za-z0-9_.-]+", "_", (galaxy or "galaxy").strip()) or "galaxy"
+    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    path = os.path.join(base or os.getcwd(), "result_{}_{}_{}".format(tool, name, stamp))
+    os.makedirs(path, exist_ok=True)
+    return path
 
 def output_prefix(given, fallback_dir, galaxy):
     """Turn what the person typed into a stem for the output files.
@@ -2708,6 +2871,15 @@ def save_frame(path, data, wcs=None, info=None, history=()):
             header["OBJECT"] = info["object"]
         if info.get("pixel_scale"):
             header["PIXSCALE"] = float(info["pixel_scale"])
+        for key, word in (("saturate", "SATURATE"), ("gain", "GAIN"),
+                          ("rdnoise", "RDNOISE"), ("total_exptime", "TOTEXP")):
+            if info.get(key):
+                header[word] = float(info[key])
+        if (info.get("ncombine") or 1) > 1:
+            header["NCOMBINE"] = int(info["ncombine"])
+            header["COMBTYPE"] = str(info.get("combtype") or "median")
+        if info.get("date"):
+            header["DATE-OBS"] = str(info["date"])
     pixels = np.asarray(data, dtype="float32")
     blank = ~np.isfinite(pixels)
     if blank.any():
@@ -3650,7 +3822,8 @@ def ask_for_arguments():
         argv += ["--completeness"]
 
     prefix = ask("Where to write the output, name without extension "
-                 "(blank to write beside the H-alpha frame)", "")
+                 "(blank for a new result_HII_<galaxy>_<date> folder beside "
+                 "the frames)", "")
     if prefix:
         argv += ["--out-prefix", normalise_path(prefix)]
 
@@ -3828,10 +4001,19 @@ def main(argv=None):
     red, red_wcs, red_bpm, red_info = combine_exposures(
         groups.get("R") or [args.red], donors.get("R"), "red",
         positions=fg_stars if len(fg_stars) else None)
-    print("  H-alpha : {:<9} {:>6.0f}s  {}".format(
-        ha_info["filter"], ha_info["exptime"], os.path.basename(args.halpha)))
-    print("  red     : {:<9} {:>6.0f}s  {}".format(
-        red_info["filter"], red_info["exptime"], os.path.basename(args.red)))
+    def _what(info, paths, single):
+        # A median keeps the level of one exposure, so EXPTIME is one exposure;
+        # the line says how many went in and their total.
+        n = len(paths) if paths else int(info.get("ncombine") or 1)
+        if n > 1:
+            total = info.get("total_exptime") or n * info["exptime"]
+            return "{:>6.0f}s each, median of {} ({:.0f}s in all)".format(
+                info["exptime"], n, total)
+        return "{:>6.0f}s  {}".format(info["exptime"], os.path.basename(single))
+    print("  H-alpha : {:<9} {}".format(
+        ha_info["filter"], _what(ha_info, groups.get("Ha"), args.halpha)))
+    print("  red     : {:<9} {}".format(
+        red_info["filter"], _what(red_info, groups.get("R"), args.red)))
 
     pixel_scale = ha_info["pixel_scale"] or red_info["pixel_scale"]
     if pixel_scale:
@@ -3879,9 +4061,15 @@ def main(argv=None):
     # widths and subtracting them in quadrature got the sign of the answer wrong
     # on real frames, and the mean factor over the stars left twice as many
     # visible star residuals as a value three percent away from it.
-    _stem_now = output_prefix(args.out_prefix,
-                              os.path.dirname(os.path.abspath(args.halpha)),
-                              args.galaxy)
+    # A new folder for every run, beside the frames, unless --out-prefix says
+    # otherwise. The files used to go straight into the folder holding the
+    # frames, under the same names each time, so every run overwrote the last.
+    _run_dir = (None if args.out_prefix else new_run_folder(
+        args.folder or os.path.dirname(os.path.abspath(args.halpha)), "HII",
+        args.galaxy))
+    if _run_dir:
+        print("Writing everything to " + _run_dir)
+    _stem_now = output_prefix(args.out_prefix, _run_dir, args.galaxy)
     ha, red, _picked, _chdiag = choose_subtraction(
         ha, red, _fw_stars, _stem_now, centre=centre, r25_px=r25_px, ask=ask)
     if _picked is not None:
@@ -3925,9 +4113,7 @@ def main(argv=None):
     # existed only inside a plot - so the one thing the tool asks a person to do
     # when the subtraction looks doubtful, look at the subtracted frame, could not
     # be done.
-    _stem = output_prefix(args.out_prefix,
-                          os.path.dirname(os.path.abspath(args.halpha)),
-                          args.galaxy)
+    _stem = output_prefix(args.out_prefix, _run_dir, args.galaxy)
     # Named for what it is. Both tools use the same name for the same thing.
     _sub_path = _stem + "_Ha_minus_continuum.fits"
     save_frame(_sub_path, net, ha_wcs, ha_info, history=(
