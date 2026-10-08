@@ -2484,6 +2484,25 @@ describe_extent = describe__galaxy_extent  # from galaxy_extent, inlined above
 
 describe_anchors = describe__anchor_registration  # from anchor_registration, inlined above
 
+def donor_beside(path, role):
+    """A solved exposure in the same folder as `path`, when `path` has no solution.
+
+    Returns its path, or None when `path` is solved already or nothing beside it
+    is. Same filter first, then any solved frame of the field.
+    """
+    try:
+        rec = inspect(path)
+    except Exception:
+        return None
+    if rec.get("wcs"):
+        return None
+    rec["role"] = rec.get("role") or role
+    here = os.path.abspath(path)
+    others = [r for r in scan_folder(os.path.dirname(here), recursive=False)
+              if os.path.abspath(r["path"]) != here and not r.get("error")]
+    donor = donor_for(rec, others)
+    return donor["path"] if donor else None
+
 def frames_from_folder(folder, roles):
     """Work out which file in a folder plays each part, and say so before starting.
 
@@ -2619,6 +2638,25 @@ def load_frame(path, donor_path=None):
                 info["pixel_scale"] = ref_info["pixel_scale"]
             if info["filter"] == "?":
                 info["filter"] = ref_info["filter"]
+            # A combined frame written by another program often keeps no header
+            # at all. The camera and the exposure length are those of the solved
+            # exposure it came from, so they are taken from there, and said so.
+            borrowed = []
+            for key, card in (("exptime", "EXPTIME"), ("saturate", "SATURATE"),
+                              ("gain", "GAIN"), ("rdnoise", "RDNOISE"),
+                              ("date", "DATE-OBS"), ("object", "OBJECT")):
+                if card in header or (key in ("saturate", "gain", "rdnoise")
+                                      and info[key] is not None):
+                    continue
+                if key == "object" and info[key] != "?":
+                    continue
+                if ref_info.get(key) not in (None, "", "?"):
+                    info[key] = ref_info[key]
+                    borrowed.append(card)
+            if borrowed:
+                print("  {}: no {} in its header; taken from {}".format(
+                    os.path.basename(path), ", ".join(borrowed),
+                    os.path.basename(donor_path)), flush=True)
 
     return data, wcs, bpm, info
 
@@ -5266,6 +5304,36 @@ def main(argv=None):
                    history=(f"Median of {len(paths)} exposures",
                             "Combined by Blue_Clusters_From_Images.py"))
         combined_note.append(f"{role}: median of {len(paths)} exposures")
+        if role == "B":
+            fits_file_B = out
+        else:
+            fits_file_V = out
+        del data_c
+
+    # A file named on the command line that has no plate solution - typically a
+    # median written by another program, which kept no header - borrows one from
+    # a solved exposure in its own folder, exactly as in the folder mode.
+    for role in ("B", "V"):
+        path = fits_file_B if role == "B" else fits_file_V
+        if groups.get(role) or donors.get(role):
+            continue
+        donor = donor_beside(path, role)
+        if donor is None:
+            continue
+        print(f"[input] {role}: {os.path.basename(path)} has no plate solution; "
+              f"fitting one against {os.path.basename(donor)}", flush=True)
+        data_c, wcs_c, _bpm, info_c = load_frame(path, donor)
+        if wcs_c is None:
+            continue
+        # The number of frames combined belongs to this file, not to the donor;
+        # it is known only if this file's own header says it.
+        n_comb, how = combined_count(fits.getheader(path))
+        info_c["ncombine"], info_c["combtype"] = n_comb, ("" if n_comb == 1 else how)
+        out = os.path.join(out_dir, f"{safe}_{role}_solved.fits")
+        save_frame(out, data_c, wcs_c, info_c, history=(
+            "Plate solution fitted against " + os.path.basename(donor),))
+        combined_note.append(f"{role}: plate solution borrowed from "
+                             f"{os.path.basename(donor)}")
         if role == "B":
             fits_file_B = out
         else:

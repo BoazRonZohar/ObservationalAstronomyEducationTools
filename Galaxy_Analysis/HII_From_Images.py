@@ -2477,6 +2477,25 @@ def load_frame(path, donor_path=None):
                 info["pixel_scale"] = ref_info["pixel_scale"]
             if info["filter"] == "?":
                 info["filter"] = ref_info["filter"]
+            # A combined frame written by another program often keeps no header
+            # at all. The camera and the exposure length are those of the solved
+            # exposure it came from, so they are taken from there, and said so.
+            borrowed = []
+            for key, card in (("exptime", "EXPTIME"), ("saturate", "SATURATE"),
+                              ("gain", "GAIN"), ("rdnoise", "RDNOISE"),
+                              ("date", "DATE-OBS"), ("object", "OBJECT")):
+                if card in header or (key in ("saturate", "gain", "rdnoise")
+                                      and info[key] is not None):
+                    continue
+                if key == "object" and info[key] != "?":
+                    continue
+                if ref_info.get(key) not in (None, "", "?"):
+                    info[key] = ref_info[key]
+                    borrowed.append(card)
+            if borrowed:
+                print("  {}: no {} in its header; taken from {}".format(
+                    os.path.basename(path), ", ".join(borrowed),
+                    os.path.basename(donor_path)), flush=True)
 
     return data, wcs, bpm, info
 
