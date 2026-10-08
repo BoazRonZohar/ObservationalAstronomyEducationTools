@@ -5220,7 +5220,10 @@ def make_cmd(df, base_file, label, name, mu=None, window=None):
     if mu is not None and np.isfinite(mu):
         sec = ax.secondary_yaxis("right", functions=(lambda m: m - mu, lambda M: M + mu))
         sec.set_ylabel(f"M$_V$  [mag]   (distance modulus {mu:.2f})")
-    ax.set_title(f"CMD of {name} {label}\n{len(d)} sources drawn"
+    left_out = int(len(df) - len(d))
+    ax.set_title(f"CMD of {name} {label}\n{len(d)} of {len(df)} sources drawn"
+                 + (f" ({left_out} saturated or with a B-V error above "
+                    f"{CMD_MAX_BV_ERR:g} mag left out)" if left_out else "")
                  + (f"; dashed lines: the blue-knot colour window" if window else ""))
     out_cmd = base_file.replace(".csv", "_CMD.png")
     fig.savefig(out_cmd, dpi=150, bbox_inches="tight")
