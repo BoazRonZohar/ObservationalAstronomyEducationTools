@@ -854,6 +854,11 @@ def new_run_dir(path):
     return path + "_" + _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
 
 
+def _summary_stem(out_dir):
+    """'SUMMARY', or 'SUMMARY_<YYYYmmdd_HHMMSS>' when a summary is already there."""
+    return os.path.basename(new_run_dir(os.path.join(out_dir, "SUMMARY")))
+
+
 def latest_runs(roots):
     """One output folder per target: the newest run of each."""
     best = {}
@@ -3504,12 +3509,37 @@ def fit_dip(df, min_points=5, n_shifts=50):
             bd.append(r[5])
             bm.append(r[1])
             bw.append(r[2])
-    mid_err = cad / np.sqrt(12.0)          # the sampling alone
+    # A box edge can only sit between two frames, so the mid-time is never
+    # known better than about half a cadence; at high signal the shifted
+    # residuals all land the box on the same frames and their spread
+    # alone would claim more.
+    mid_err = cad / 2.0
     dur_err = np.nan
     if len(bd) >= 10:
         depth_err = max(depth_err, float(np.std(bd)))
         mid_err = max(mid_err, float(np.std(bm)))
         dur_err = float(np.std(bw)) * 1440.0
+
+    # Deepest point: the baseline taken off, a running median of 3 frames,
+    # its maximum inside the box. For a V-shaped eclipse the box depth is the
+    # mean dimming over the eclipse and this is the minimum. Its error uses
+    # the frame-to-frame noise (from neighbouring differences), not the box
+    # residuals, which on a V shape are mostly the shape itself.
+    # The baseline for it comes from frames well clear of the box (more than
+    # one box length from the middle): a V-shaped eclipse has wings outside
+    # the box, which lift the box fit's own baseline.
+    far = np.abs(t - mid) > dur
+    if far.sum() >= 2 * min_points:
+        bb, aa = np.polyfit(t[far] - t.mean(), v[far], 1)
+    else:
+        aa, bb = a, b
+    y = v - (aa + bb * (t - t.mean()))
+    k = 1
+    sm = np.array([np.median(y[max(0, i - k):i + k + 1]) for i in range(len(y))])
+    depth_min = float(np.max(sm[inbox])) if inbox.any() else np.nan
+    dy = np.diff(y)
+    s_pt = 1.4826 * np.median(np.abs(dy - np.median(dy))) / np.sqrt(2.0)
+    depth_min_err = float(1.25 * s_pt / np.sqrt(2 * k + 1))
 
     partial = ""
     if mid - dur / 2 < t[0] + cad / 2:
@@ -3519,6 +3549,7 @@ def fit_dip(df, min_points=5, n_shifts=50):
     out.update(depth=float(depth), depth_err=depth_err, t_mid=float(mid),
                t_mid_err=float(mid_err), duration=float(dur * 1440.0),
                duration_err=dur_err, n_in=int(inbox.sum()),
+               depth_min=depth_min, depth_min_err=depth_min_err,
                significance=depth / depth_err if depth_err > 0 else np.nan,
                partial=partial)
     return out
@@ -3773,7 +3804,9 @@ eclipse depth (mag)       How deep the star went, from a box fitted on a straigh
                           as no significant dip - a search over all positions
                           and lengths finds 3 to 4 sigma in pure noise. For a
                           V-shaped eclipse the box gives the mean dimming over
-                          the eclipse, less than the deepest point.
+                          the eclipse, less than the deepest point; the
+                          deepest point (running median of 3 frames) is
+                          then given as well.
                           The mid-time is BJD_TDB, mid-exposure, when the
                           header has the target's coordinates.
                           (Before: median of the faintest tenth minus median of
@@ -3838,7 +3871,8 @@ def _dip_cells(d):
         when += " " + ("BJD_TDB" if d.get("time_col") == "bjd_tdb" else "JD_UTC")
     return [f(d.get("depth_err", np.nan), ".4f"), f(d.get("significance", np.nan), ".1f"),
             when, f(d.get("t_mid_err", np.nan) * 1440.0, ".1f"),
-            f(d.get("duration", np.nan), ".0f")]
+            f(d.get("duration", np.nan), ".0f"),
+            f(d.get("depth_min", np.nan), ".4f")]
 
 
 def _dip_text(d, depth):
@@ -3853,19 +3887,24 @@ def _dip_text(d, depth):
     txt = (f"dip {depth:.4f} +/- {err:.4f} mag ({sig:.0f} sigma), mid {tc} "
            f"{d['t_mid']:.5f} +/- {d['t_mid_err'] * 1440.0:.1f} min, "
            f"lasting {d['duration']:.0f} min")
+    dm = d.get("depth_min", np.nan)
+    if np.isfinite(dm) and dm - depth > 4 * max(d.get("depth_min_err", 0.0), err):
+        # worth saying only when the curve is clearly V-shaped
+        txt += f"; deepest point {dm:.4f} +/- {d['depth_min_err']:.4f} mag"
     if d.get("partial"):
         txt += f" - it {d['partial']}, so the depth is a lower limit and the mid-time is not determined"
     return txt
 
 
-def write_summary(rows, out_dir, dropped_all):
-    csv_path = os.path.join(out_dir, "SUMMARY.csv")
+def write_summary(rows, out_dir, dropped_all, stem="SUMMARY"):
+    csv_path = os.path.join(out_dir, stem + ".csv")
     with open(csv_path, "w", newline="", encoding="utf-8-sig") as fh:
         wr = csv.writer(fh)
         wr.writerow(["target", "channel", "measurement noise (mmag)",
                      "target variation (mmag)", "eclipse depth (mag)",
                      "depth error (mag)", "dip significance (sigma)",
                      "mid-time", "mid-time error (min)", "duration (min)",
+                     "deepest point (mag)",
                      "variation vs comparison", "frames", "comparison stars",
                      "position gap (pixels)", "curve gap (mmag)",
                      "reliability", "notes"])
@@ -3880,11 +3919,10 @@ def write_summary(rows, out_dir, dropped_all):
                          f"{r['pos_max']:.2f}" if np.isfinite(r["pos_max"]) else "-",
                          f"{r['curve']:.1f}" if np.isfinite(r["curve"]) else "-",
                          "RELIABLE" if r["ok"] else "CHECK", r["note"]])
-        wr.writerow([])
-        for line in SUMMARY_LEGEND.strip().splitlines():
-            wr.writerow([line])
+        # The legend is in SUMMARY.txt. Written here it became a column of
+        # loose rows under the table, which breaks it as a table.
 
-    txt_path = os.path.join(out_dir, "SUMMARY.txt")
+    txt_path = os.path.join(out_dir, stem + ".txt")
     with open(txt_path, "w", encoding="utf-8") as fh:
         fh.write("Observation summary\n" + "=" * 70 + "\n\n")
         cur = None
@@ -5373,7 +5411,16 @@ def main():
 
     if not summary:
         raise SystemExit("Nothing was measured.")
-    write_summary(summary, args.output_dir, dropped_all)
+    # Each target's summary lives with that target's results, in its own run
+    # folder, so a second run does not overwrite the first one's. A combined
+    # one goes above them only when there is more than one target.
+    for tname, tdir in target_dirs.items():
+        rows_t = [r for r in summary if r["target"] == tname]
+        if rows_t:
+            write_summary(rows_t, tdir, [d for d in dropped_all if d[0] == tname])
+    if len(target_dirs) > 1:
+        write_summary(summary, args.output_dir, dropped_all,
+                      stem=_summary_stem(args.output_dir))
     print("")
     for tname, tdir in sorted(target_dirs.items()):
         try:

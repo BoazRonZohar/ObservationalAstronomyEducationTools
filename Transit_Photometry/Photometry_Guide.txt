@@ -58,7 +58,8 @@ What you get
 Inside Output_<star name>:
 
     SUMMARY.txt              <- read this. The summary and the legend.
-    SUMMARY.csv                the same, for Excel
+    SUMMARY.csv                the same table, for Excel (the legend is in
+                               SUMMARY.txt)
     comparison_stars.txt     <- how each comparison star behaved. Read this
                                 before choosing stars yourself.
     G_wcs_light_curve.png      the light curve
