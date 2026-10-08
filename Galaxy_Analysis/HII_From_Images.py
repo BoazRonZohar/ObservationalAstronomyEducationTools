@@ -310,6 +310,10 @@ def scan_folder(folder, recursive=True):
         for name in sorted(files):
             if not name.lower().endswith(FITS_SUFFIXES):
                 continue
+            # What these tools write next to their results - a background-
+            # subtracted copy, a frame with a borrowed solution - is not data.
+            if re.search(r"_(bgsub|solved)\.fits?$", name, re.I):
+                continue
             path = os.path.join(root, name)
             try:
                 found.append(inspect(path))
