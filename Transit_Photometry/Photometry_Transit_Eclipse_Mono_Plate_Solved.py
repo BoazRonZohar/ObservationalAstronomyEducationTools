@@ -3866,12 +3866,13 @@ def _dip_cells(d):
     duration."""
     def f(x, fmt):
         return format(x, fmt) if x is not None and np.isfinite(x) else "-"
-    when = f(d.get("t_mid", np.nan), ".5f")
+    partial = bool(d.get("partial"))
+    when = "-" if partial else f(d.get("t_mid", np.nan), ".5f")
     if when != "-":
         when += " " + ("BJD_TDB" if d.get("time_col") == "bjd_tdb" else "JD_UTC")
     return [f(d.get("depth_err", np.nan), ".4f"), f(d.get("significance", np.nan), ".1f"),
-            when, f(d.get("t_mid_err", np.nan) * 1440.0, ".1f"),
-            f(d.get("duration", np.nan), ".0f"),
+            when, "-" if partial else f(d.get("t_mid_err", np.nan) * 1440.0, ".1f"),
+            "-" if partial else f(d.get("duration", np.nan), ".0f"),
             f(d.get("depth_min", np.nan), ".4f")]
 
 
@@ -3884,6 +3885,12 @@ def _dip_text(d, depth):
         return (f"no significant dip: best box {depth:.4f} +/- {err:.4f} mag, "
                 f"{sig:.1f} sigma, below 5")
     tc = "BJD_TDB" if d.get("time_col") == "bjd_tdb" else "JD_UTC"
+    if d.get("partial"):
+        # the box runs off the observation: neither its middle nor its
+        # length is measured, so no number is given for them
+        return (f"dip {depth:.4f} +/- {err:.4f} mag ({sig:.0f} sigma) - it "
+                f"{d['partial']}, so the depth is a lower limit and the "
+                f"mid-time is not determined")
     txt = (f"dip {depth:.4f} +/- {err:.4f} mag ({sig:.0f} sigma), mid {tc} "
            f"{d['t_mid']:.5f} +/- {d['t_mid_err'] * 1440.0:.1f} min, "
            f"lasting {d['duration']:.0f} min")
@@ -3891,8 +3898,6 @@ def _dip_text(d, depth):
     if np.isfinite(dm) and dm - depth > 4 * max(d.get("depth_min_err", 0.0), err):
         # worth saying only when the curve is clearly V-shaped
         txt += f"; deepest point {dm:.4f} +/- {d['depth_min_err']:.4f} mag"
-    if d.get("partial"):
-        txt += f" - it {d['partial']}, so the depth is a lower limit and the mid-time is not determined"
     return txt
 
 
