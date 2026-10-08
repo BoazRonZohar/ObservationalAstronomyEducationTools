@@ -200,27 +200,130 @@ def read_fits_data(path):
 
 
 def get_obs_time_jd(header, path):
+    """Julian Date (UTC) of the MIDDLE of the exposure.
+
+    Every source of the time is brought to the same instant. DATE-OBS, MJD-OBS
+    and MaxIm's JD all give the START of the exposure, so half the exposure is
+    added to each of them; a keyword whose comment says it is the midpoint is
+    taken as it is. Before, DATE-OBS was moved to mid-exposure and MJD-OBS and
+    JD were not, so the same night read through two keywords disagreed by half
+    an exposure - 30 s on 60 s frames, which is a shift of the mid-transit
+    time, not noise.
+    """
+    exptime = 0.0
+    try:
+        exptime = float(header.get("EXPTIME", header.get("EXPOSURE", 0.0)) or 0.0)
+    except (TypeError, ValueError):
+        exptime = 0.0
+    half = exptime / 2.0 / 86400.0
+
+    def _is_mid(key):
+        try:
+            return "mid" in str(header.comments[key]).lower()
+        except Exception:
+            return False
+
+    for key in ("JD-MID", "MJD-MID"):
+        if key in header:
+            try:
+                v = float(header[key])
+                return v + (2400000.5 if key.startswith("MJD") else 0.0)
+            except (TypeError, ValueError):
+                pass
     for key in ("JD", "JD-OBS", "JD_OBS"):
         if key in header:
             try:
-                return float(header[key])
+                return float(header[key]) + (0.0 if _is_mid(key) else half)
             except (TypeError, ValueError):
                 pass
     for key in ("MJD-OBS", "MJD"):
         if key in header:
             try:
-                return float(header[key]) + 2400000.5
+                return float(header[key]) + 2400000.5 + (0.0 if _is_mid(key) else half)
             except (TypeError, ValueError):
                 pass
     if "DATE-OBS" in header:
         try:
             t = Time(header["DATE-OBS"], format="isot", scale="utc")
-            if "EXPTIME" in header:
-                t = t + float(header["EXPTIME"]) / 2.0 / 86400.0
-            return t.jd
+            return t.jd + (0.0 if _is_mid("DATE-OBS") else half)
         except Exception:
             pass
     return None
+
+
+def _site_of(header):
+    """The observatory, from the header, as an astropy EarthLocation.
+
+    MaxIm writes SITELAT / SITELONG (sexagesimal strings) and SITEELEV; LCO
+    writes LATITUDE / LONGITUD / HEIGHT in degrees and metres. Without either,
+    None - the barycentric correction is then made for the centre of the
+    Earth, which is wrong by at most 21 ms (the light time across one Earth
+    radius) and does not matter for a light curve."""
+    from astropy.coordinates import EarthLocation, Angle
+    import astropy.units as _u
+    for klat, klon, kh in (("SITELAT", "SITELONG", "SITEELEV"),
+                           ("LATITUDE", "LONGITUD", "HEIGHT"),
+                           ("OBSGEO-B", "OBSGEO-L", "OBSGEO-H")):
+        if klat in header and klon in header:
+            try:
+                lat, lon = header[klat], header[klon]
+                lat = Angle(lat, unit=_u.deg) if isinstance(lat, str) else Angle(float(lat), unit=_u.deg)
+                lon = Angle(lon, unit=_u.deg) if isinstance(lon, str) else Angle(float(lon), unit=_u.deg)
+                h = float(header.get(kh, 0.0) or 0.0)
+                return EarthLocation.from_geodetic(lon, lat, h * _u.m)
+            except Exception:
+                continue
+    return None
+
+
+def _target_radec_of(header):
+    """The target's coordinates from the header, in degrees, or None."""
+    from astropy.coordinates import SkyCoord
+    import astropy.units as _u
+    for kra, kdec, unit in (("CAT-RA", "CAT-DEC", (_u.hourangle, _u.deg)),
+                            ("OBJCTRA", "OBJCTDEC", (_u.hourangle, _u.deg)),
+                            ("RA", "DEC", None)):
+        if kra in header and kdec in header:
+            try:
+                ra, dec = header[kra], header[kdec]
+                if unit is None:
+                    unit = ((_u.hourangle, _u.deg) if isinstance(ra, str)
+                            else (_u.deg, _u.deg))
+                c = SkyCoord(ra, dec, unit=unit)
+                return float(c.ra.deg), float(c.dec.deg)
+            except Exception:
+                continue
+    return None
+
+
+def bjd_tdb(jd_utc, header, radec=None):
+    """BJD_TDB of a mid-exposure JD_UTC, for the target at `radec` (degrees).
+
+    What every published transit and eclipse time is given in. The light from
+    the star reaches the Sun's barycentre up to 8.3 minutes before or after it
+    reaches the telescope, depending on where the Earth is in its orbit, and
+    TDB differs from UTC by 69 s; the column used to be labelled BJD while it
+    held JD_UTC, so neither correction was in it. Returns NaN when the target
+    coordinates are not known."""
+    import astropy.units as _u
+    from astropy.coordinates import SkyCoord
+    if jd_utc is None or not np.isfinite(jd_utc):
+        return np.nan
+    if radec is None:
+        radec = _target_radec_of(header)
+    if radec is None:
+        return np.nan
+    try:
+        site = _site_of(header)
+        t = Time(float(jd_utc), format="jd", scale="utc", location=site)
+        if site is None:
+            from astropy.coordinates import EarthLocation
+            t = Time(float(jd_utc), format="jd", scale="utc",
+                     location=EarthLocation.from_geocentric(0, 0, 0, unit=_u.m))
+        c = SkyCoord(radec[0] * _u.deg, radec[1] * _u.deg)
+        return float((t.tdb + t.light_travel_time(c, kind="barycentric")).jd)
+    except Exception:
+        return np.nan
 
 
 # --------------------------------------------------------------------------
@@ -668,6 +771,84 @@ def measure_flux(data, x, y, r_aper, r_in, r_out, gain=1.0, ron=0.0, dark=0.0):
     return float(flux), float(flux_err), float(sky_per_pix)
 
 
+def frame_saturation_level(header, data):
+    """The level above which a pixel of this frame is not trusted, in ADU.
+
+    MAXLIN (end of the linear range) when the header has it, then SATURATE.
+    Without either, the frame itself: pixels clipped by the converter all
+    sit at the same top value, so when four or more pixels share the frame's
+    maximum, that maximum is the clipping level and 98% of it is used.
+    Otherwise nothing is known and nothing is flagged (inf).
+    """
+    for k in ("MAXLIN", "SATURATE"):
+        try:
+            v = float(header.get(k))
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(v) and v > 0:
+            return v
+    finite = np.asarray(data, float)
+    finite = finite[np.isfinite(finite)]
+    if finite.size == 0:
+        return np.inf
+    m = float(finite.max())
+    if np.count_nonzero(finite >= m - max(0.5, 1e-6 * abs(m))) >= 4:
+        return 0.98 * m
+    return np.inf
+
+
+def aperture_peak(data, x, y, r):
+    """Highest pixel value inside the aperture of radius r at (x, y)."""
+    if not (np.isfinite(x) and np.isfinite(y) and np.isfinite(r)):
+        return np.nan
+    ny, nx = data.shape
+    x0, x1 = max(int(np.floor(x - r)), 0), min(int(np.ceil(x + r)) + 1, nx)
+    y0, y1 = max(int(np.floor(y - r)), 0), min(int(np.ceil(y + r)) + 1, ny)
+    if x1 <= x0 or y1 <= y0:
+        return np.nan
+    yy, xx = np.mgrid[y0:y1, x0:x1]
+    vals = data[y0:y1, x0:x1][(xx - x) ** 2 + (yy - y) ** 2 <= r * r]
+    vals = vals[np.isfinite(vals)]
+    return float(vals.max()) if vals.size else np.nan
+
+
+def apply_saturation(df, names, target_name, max_frac=0.02):
+    """Act on the per-frame saturation flags `<star>_sat`.
+
+    A saturated star's flux in that frame is already marked not-ok where it
+    was measured. Here: a comparison star saturated in more than `max_frac`
+    of the frames is taken out of the ensemble altogether, since keeping it
+    only in its unsaturated frames changes the ensemble from frame to frame.
+    The target's saturated frames are counted and reported. Returns the list
+    of comparison stars taken out.
+    """
+    n = len(df)
+    dropped = []
+    if n == 0:
+        return dropped
+    for name in names:
+        col = f"{name}_sat"
+        if col not in df.columns:
+            continue
+        k = int(df[col].fillna(False).astype(bool).sum())
+        if k == 0:
+            continue
+        if name == target_name:
+            print(f"    ! target {name} saturated in {k} of {n} frames - "
+                  f"those frames are left out of the light curve")
+        elif k > max_frac * n:
+            dropped.append(name)
+            df[f"{name}_ok"] = False
+            df[f"{name}_mag"] = np.nan
+            df[f"{name}_magerr"] = np.nan
+            print(f"    ! comparison star {name} saturated in {k} of {n} frames - "
+                  f"removed from the ensemble")
+        else:
+            print(f"    comparison star {name} saturated in {k} of {n} frames - "
+                  f"those frames are not used for it")
+    return dropped
+
+
 # --------------------------------------------------------------------------
 # Interactive configuration (FWHM multiples + star selection)
 # --------------------------------------------------------------------------
@@ -759,7 +940,31 @@ def default_output_dir(input_dir, ref_file):
     name = "_".join(name.split()).rstrip(". ")
     if not name:
         name = "target"
-    return os.path.join(input_dir, f"{name}_results")
+    return new_run_dir(os.path.join(input_dir, f"{name}_results"))
+
+
+_RUN_STAMP = re.compile(r"_\d{8}_\d{6}$")
+
+
+def new_run_dir(path):
+    """`path` if it does not exist yet, else `path_<YYYYmmdd_HHMMSS>`.
+
+    A second run never writes over the first one's results.
+    """
+    if not os.path.exists(path):
+        return path
+    import datetime as _dt
+    return path + "_" + _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+def latest_runs(roots):
+    """One output folder per target: the newest run of each."""
+    best = {}
+    for r in roots:
+        key = _RUN_STAMP.sub("", os.path.basename(os.path.normpath(r)))
+        if key not in best or os.path.getmtime(r) >= os.path.getmtime(best[key]):
+            best[key] = r
+    return [best[k] for k in sorted(best)]
 
 
 def prompt_float(msg, default):
@@ -769,11 +974,81 @@ def prompt_float(msg, default):
         raw = ""
     if raw == "":
         return default
+    while True:
+        try:
+            return float(raw.replace(",", "."))
+        except ValueError:
+            # Asked again rather than replaced by the default: a mistyped
+            # gain that silently became 1.0 changes every error bar.
+            print(f"  ! '{raw}' is not a number - please type a number "
+                  f"(check the keyboard language)")
+        try:
+            raw = input(f"{msg} [{default}]: ").strip()
+        except EOFError:
+            raw = ""
+        if raw == "":
+            return default
+
+
+def header_gain_ron(path):
+    """Gain (e-/ADU) and read noise (e-) from the first header that has them.
+
+    MaxIm writes the true gain as EGAIN. Its GAIN keyword is, on CMOS cameras,
+    the driver's gain SETTING (0..~500), not electrons per ADU, so GAIN is
+    trusted only when there is no EGAIN and the value is below 20. Returns
+    (gain, ron, note) with None for whatever the header does not hold.
+    """
+    gain = ron = None
+    src = []
     try:
-        return float(raw)
-    except ValueError:
-        print("  ! not a number, using default")
-        return default
+        with fits.open(path) as hdul:
+            for hdu in hdul:
+                h = hdu.header
+                if gain is None:
+                    for k in ("EGAIN", "GAIN"):
+                        v = h.get(k)
+                        try:
+                            v = float(v)
+                        except (TypeError, ValueError):
+                            continue
+                        if v > 0 and (k == "EGAIN" or v < 20):
+                            gain = v
+                            src.append(k)
+                            break
+                if ron is None:
+                    for k in ("RDNOISE", "READNOIS", "RON"):
+                        v = h.get(k)
+                        try:
+                            v = float(v)
+                        except (TypeError, ValueError):
+                            continue
+                        if v > 0:
+                            ron = v
+                            src.append(k)
+                            break
+    except Exception:
+        pass
+    return gain, ron, ", ".join(src)
+
+
+def ask_gain_ron(args, path):
+    """Fill args.gain / args.ron, offering the header's values as defaults."""
+    g, r, src = header_gain_ron(path) if path else (None, None, "")
+    if src:
+        print(f"  from the FITS header ({os.path.basename(path)}): {src}")
+    if args.gain is None:
+        args.gain = prompt_float(
+            "Camera gain (electrons per ADU)" +
+            (" - value from the header" if g is not None else
+             " - not in the header (EGAIN), check the camera's data"),
+            g if g is not None else 1.0)
+    if args.ron is None:
+        args.ron = prompt_float(
+            "Camera read noise RON (electrons)" +
+            (" - value from the header" if r is not None else
+             " - not in the header (RDNOISE); default is a community "
+             "estimate, not an official spec"),
+            r if r is not None else 3.7)
 
 
 def configure_from_csv(ref_data, stars, args):
@@ -1706,10 +1981,12 @@ def process_all(input_dir, ref_file, star_list_path, args):
         found_ax, found_ay = ax0 + dx, ay0 + dy
         sign_x, sign_y = ORIENTATIONS[orientation][1]
 
-        row = {"file": fname, "jd": get_obs_time_jd(header, path),
+        row = {"file": fname, "jd": (_jd := get_obs_time_jd(header, path)),
+               "bjd_tdb": bjd_tdb(_jd, header),
                "anchor_dx": dx, "anchor_dy": dy, "anchor_corr": peak,
                "orientation": orientation}
 
+        sat_lvl = frame_saturation_level(header, data)
         comp_fluxes = []
         comp_ferrs = []
         comp_names_used = []
@@ -1723,6 +2000,11 @@ def process_all(input_dir, ref_file, star_list_path, args):
                                             gain=args.gain, ron=args.ron, dark=args.dark)
 
             good = ok and np.isfinite(flux) and flux > 0
+            pk = aperture_peak(data, xr, yr, r_aper)
+            row[f"{name}_peak"] = pk
+            row[f"{name}_sat"] = bool(np.isfinite(pk) and pk >= sat_lvl)
+            if row[f"{name}_sat"]:
+                good = False
             row[f"{name}_x"] = xr
             row[f"{name}_y"] = yr
             row[f"{name}_flux"] = flux
@@ -1808,6 +2090,14 @@ def process_all(input_dir, ref_file, star_list_path, args):
               f"target={status}{orient_flag}")
 
     df = pd.DataFrame(rows)
+
+    # --- saturation, frame by frame ---
+    sat_dropped = apply_saturation(df, use_names, target_name)
+    if sat_dropped:
+        config["saturated_comps"] = sat_dropped
+        config["chosen_comps"] = [c for c in config["chosen_comps"]
+                                  if c not in sat_dropped]
+        df = recompute_ensemble(df, target_name, config["chosen_comps"])
 
     # --- elapsed time in minutes, from the first (earliest) timed frame ---
     # (computed BEFORE the stability check below, since that check needs it
@@ -1909,7 +2199,7 @@ def process_all(input_dir, ref_file, star_list_path, args):
     # --- put the 6 requested columns first, keep everything else after ---
     target_mag_col = f"{target_name}_mag"
     target_flux_col = f"{target_name}_flux"
-    front_cols = ["jd", "elapsed_min", target_mag_col,
+    front_cols = ["jd", "bjd_tdb", "elapsed_min", target_mag_col,
                   "mag_comp_minus_target", target_flux_col,
                   "flux_comp_minus_target", "target_mag_calibrated"]
     front_cols = [c for c in front_cols if c in df.columns]
@@ -2257,13 +2547,7 @@ def main():
         print(f"  created output folder: {args.output_dir}")
     args.output = os.path.join(args.output_dir, os.path.basename(args.output))
 
-    if args.gain is None:
-        args.gain = prompt_float("Camera gain (electrons per ADU) - check your FITS "
-                                  "header's EGAIN keyword if present", 1.0)
-    if args.ron is None:
-        args.ron = prompt_float("Camera Read Out Noise RON (electrons) - check your "
-                                 "camera's datasheet/bias frames if known; the suggested "
-                                 "default is a community estimate, not an official spec", 3.7)
+    ask_gain_ron(args, args.ref_file)
 
     print(f"\nUsing gain={args.gain} e-/ADU, RON={args.ron} e-, dark={args.dark} ADU "
           f"for the noise model.")
