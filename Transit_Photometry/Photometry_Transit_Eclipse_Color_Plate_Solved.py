@@ -4318,16 +4318,19 @@ def noise_mmag(df, comp_names, segments=None):
     return v
 
 
-def _box_scan(t, v, mids, durs, min_points):
+def _box_scan(t, v, mids, durs, min_points, slope=True):
     """Best box (lowest residuals, positive depth) among the (mid, duration)
     pairs given, for m = a + b (t - t_mean) + d * box. Vectorised: the box
     covers a run of consecutive points, so every sum it needs is a difference
-    of two cumulative sums. Returns (chi2, mid, dur, a, b, d) or None."""
-    x = t - t.mean()
+    of two cumulative sums. slope=False fixes b = 0 (a flat baseline).
+    Returns (chi2, mid, dur, a, b, d) or None."""
+    x = (t - t.mean()) if slope else np.zeros_like(t)
     n = len(t)
     cx = np.concatenate([[0.0], np.cumsum(x)])
     cv = np.concatenate([[0.0], np.cumsum(v)])
     sx, sxx, sv, sxv, svv = x.sum(), x @ x, v.sum(), x @ v, v @ v
+    if not slope:
+        sxx = 1.0        # decouples b, which then solves to exactly 0
     i0 = np.searchsorted(t, mids - durs / 2, "left")
     i1 = np.searchsorted(t, mids + durs / 2, "right")
     n_in = (i1 - i0).astype(float)
@@ -4360,7 +4363,7 @@ def _box_scan(t, v, mids, durs, min_points):
             float(coef[k, 0]), float(coef[k, 1]), float(coef[k, 2]))
 
 
-def _box_search(t, v, min_points):
+def _box_search(t, v, min_points, slope=True):
     """Coarse grid over mid-time and duration, then a finer one around the best."""
     span = t[-1] - t[0]
     cad = float(np.median(np.diff(t)))
@@ -4370,7 +4373,7 @@ def _box_search(t, v, min_points):
         m = np.arange(t[0] - dur / 2 + cad, t[-1] + dur / 2 - cad, max(cad, dur / 20))
         mids.append(m)
         durs.append(np.full_like(m, dur))
-    best = _box_scan(t, v, np.concatenate(mids), np.concatenate(durs), min_points)
+    best = _box_scan(t, v, np.concatenate(mids), np.concatenate(durs), min_points, slope)
     if best is None:
         return None
     _chi, mid0, dur0 = best[:3]
@@ -4379,7 +4382,7 @@ def _box_search(t, v, min_points):
         m = np.arange(mid0 - dur0 / 8, mid0 + dur0 / 8, max(cad / 4, dur0 / 400))
         mids.append(m)
         durs.append(np.full_like(m, dur))
-    fine = _box_scan(t, v, np.concatenate(mids), np.concatenate(durs), min_points)
+    fine = _box_scan(t, v, np.concatenate(mids), np.concatenate(durs), min_points, slope)
     return fine if fine is not None and fine[0] < best[0] else best
 
 
@@ -4442,6 +4445,22 @@ def fit_dip(df, min_points=5, n_shifts=50):
     best = _box_search(t, v, min_points)
     if best is None:
         return out
+    # A sloped baseline needs baseline frames on BOTH sides of the dip. With
+    # frames on one side only - an observation that starts or ends inside
+    # the eclipse - the slope is extrapolated across the dip with nothing to
+    # hold it, and it eats the depth (RW Tri, 2026-10-02: 1.09 mag reported
+    # for an eclipse 1.8 mag deep). There the baseline is kept flat.
+    one_sided = ""
+    _mid, _dur = best[1], best[2]
+    n_before = int((t < _mid - _dur / 2).sum())
+    n_after = int((t > _mid + _dur / 2).sum())
+    slope = min(n_before, n_after) >= min_points
+    if not slope:
+        one_sided = ("no baseline before the dip" if n_before < min_points
+                     else "no baseline after the dip")
+        flat = _box_search(t, v, min_points, slope=False)
+        if flat is not None:
+            best = flat
     chi, mid, dur, a, b, depth = best
     inbox = np.abs(t - mid) <= dur / 2
     model = a + b * (t - t.mean()) + depth * inbox
@@ -4456,7 +4475,7 @@ def fit_dip(df, min_points=5, n_shifts=50):
     shifts = np.unique(np.linspace(1, len(t) - 1, min(n_shifts, len(t) - 1)).astype(int))
     bd, bm, bw = [], [], []
     for s in shifts:
-        r = _box_search(t, model + np.roll(resid, s), min_points)
+        r = _box_search(t, model + np.roll(resid, s), min_points, slope)
         if r is not None:
             bd.append(r[5])
             bm.append(r[1])
@@ -4481,26 +4500,47 @@ def fit_dip(df, min_points=5, n_shifts=50):
     # one box length from the middle): a V-shaped eclipse has wings outside
     # the box, which lift the box fit's own baseline.
     far = np.abs(t - mid) > dur
-    if far.sum() >= 2 * min_points:
+    far_both = (far & (t < mid)).sum() >= min_points and (far & (t > mid)).sum() >= min_points
+    if far_both:
         bb, aa = np.polyfit(t[far] - t.mean(), v[far], 1)
+    elif far.sum() >= min_points:
+        # frames clear of the dip on one side only: a slope through them
+        # would be extrapolated across the dip, so a flat level is used
+        aa, bb = float(np.median(v[far])), 0.0
     else:
         aa, bb = a, b
     y = v - (aa + bb * (t - t.mean()))
     k = 1
     sm = np.array([np.median(y[max(0, i - k):i + k + 1]) for i in range(len(y))])
     depth_min = float(np.max(sm[inbox])) if inbox.any() else np.nan
-    dy = np.diff(y)
-    s_pt = 1.4826 * np.median(np.abs(dy - np.median(dy))) / np.sqrt(2.0)
+    # second differences: a steady slope (ingress, egress) drops out of them
+    d2 = y[2:] - 2 * y[1:-1] + y[:-2]
+    s_pt = 1.4826 * np.median(np.abs(d2 - np.median(d2))) / np.sqrt(6.0)
     depth_min_err = float(1.25 * s_pt / np.sqrt(2 * k + 1))
+
+    # Does the observation start or end inside the dip? Then the first (or
+    # last) frames sit well below the level the star returns to, and the box
+    # - which takes its baseline from whatever lies outside it - has no true
+    # baseline on that side. On RW Tri the run starts 0.27 mag down on the
+    # ingress, and the box put its edge on the ingress itself.
+    edge_note = ""
+    if far.sum() >= min_points and np.isfinite(s_pt) and s_pt > 0:
+        lim = max(5.0 * s_pt, 0.05 * max(depth_min, 0.0))
+        if np.median(y[:3]) > lim:
+            edge_note = "starts inside the dip"
+        elif np.median(y[-3:]) > lim:
+            edge_note = "ends inside the dip"
 
     partial = ""
     if mid - dur / 2 < t[0] + cad / 2:
         partial = "starts before the first frame"
     elif mid + dur / 2 > t[-1] - cad / 2:
         partial = "ends after the last frame"
+    elif edge_note:
+        partial = edge_note
     out.update(depth=float(depth), depth_err=depth_err, t_mid=float(mid),
                t_mid_err=float(mid_err), duration=float(dur * 1440.0),
-               duration_err=dur_err, n_in=int(inbox.sum()),
+               duration_err=dur_err, n_in=int(inbox.sum()), one_sided=one_sided,
                depth_min=depth_min, depth_min_err=depth_min_err,
                significance=depth / depth_err if depth_err > 0 else np.nan,
                partial=partial)
@@ -4819,7 +4859,7 @@ def _dip_cells(d):
     duration."""
     def f(x, fmt):
         return format(x, fmt) if x is not None and np.isfinite(x) else "-"
-    partial = bool(d.get("partial"))
+    partial = bool(d.get("partial") or d.get("one_sided"))
     when = "-" if partial else f(d.get("t_mid", np.nan), ".5f")
     if when != "-":
         when += " " + ("BJD_TDB" if d.get("time_col") == "bjd_tdb" else "JD_UTC")
@@ -4838,12 +4878,27 @@ def _dip_text(d, depth):
         return (f"no significant dip: best box {depth:.4f} +/- {err:.4f} mag, "
                 f"{sig:.1f} sigma, below 5")
     tc = "BJD_TDB" if d.get("time_col") == "bjd_tdb" else "JD_UTC"
+    if d.get("one_sided") and not d.get("partial"):
+        # The dip was not seen from both sides, so neither its start or end
+        # nor its middle is measured; the depth is against the one side seen.
+        dm = d.get("depth_min", np.nan)
+        txt = (f"dip {depth:.4f} +/- {err:.4f} mag ({sig:.0f} sigma) - "
+               f"{d['one_sided']}, so the box depth is against the frames on "
+               f"one side only and the mid-time is not determined")
+        if np.isfinite(dm):
+            txt += f"; deepest point {dm:.4f} +/- {d['depth_min_err']:.4f} mag"
+        return txt
     if d.get("partial"):
         # the box runs off the observation: neither its middle nor its
         # length is measured, so no number is given for them
-        return (f"dip {depth:.4f} +/- {err:.4f} mag ({sig:.0f} sigma) - it "
-                f"{d['partial']}, so the depth is a lower limit and the "
-                f"mid-time is not determined")
+        txt = (f"dip {depth:.4f} +/- {err:.4f} mag ({sig:.0f} sigma) - it "
+               f"{d['partial']}, so the depth is a lower limit and the "
+               f"mid-time is not determined")
+        dm = d.get("depth_min", np.nan)
+        if np.isfinite(dm) and dm > depth:
+            txt += (f"; deepest point {dm:.4f} +/- {d['depth_min_err']:.4f} mag, "
+                    f"against the level the star returns to")
+        return txt
     txt = (f"dip {depth:.4f} +/- {err:.4f} mag ({sig:.0f} sigma), mid {tc} "
            f"{d['t_mid']:.5f} +/- {d['t_mid_err'] * 1440.0:.1f} min, "
            f"lasting {d['duration']:.0f} min")
