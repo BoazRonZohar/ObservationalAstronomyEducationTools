@@ -2777,7 +2777,7 @@ def centre_on_stars(data, positions, box=15, max_move_px=6.0):
     """
     positions = np.asarray(positions, dtype=float)
     if not len(positions):
-        return positions, {"n_in": 0, "n_out": 0}
+        return positions, {"n_in": 0, "n_out": 0, "why": "no stars to centre"}
 
     ny, nx = data.shape
     half = box // 2

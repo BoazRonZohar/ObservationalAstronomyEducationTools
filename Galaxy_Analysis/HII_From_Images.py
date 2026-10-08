@@ -2616,7 +2616,7 @@ def centre_on_stars(data, positions, box=15, max_move_px=6.0):
     """
     positions = np.asarray(positions, dtype=float)
     if not len(positions):
-        return positions, {"n_in": 0, "n_out": 0}
+        return positions, {"n_in": 0, "n_out": 0, "why": "no stars to centre"}
 
     ny, nx = data.shape
     half = box // 2
@@ -4001,10 +4001,19 @@ def main(argv=None):
     red, red_wcs, red_bpm, red_info = combine_exposures(
         groups.get("R") or [args.red], donors.get("R"), "red",
         positions=fg_stars if len(fg_stars) else None)
-    print("  H-alpha : {:<9} {:>6.0f}s  {}".format(
-        ha_info["filter"], ha_info["exptime"], os.path.basename(args.halpha)))
-    print("  red     : {:<9} {:>6.0f}s  {}".format(
-        red_info["filter"], red_info["exptime"], os.path.basename(args.red)))
+    def _what(info, paths, single):
+        # A median keeps the level of one exposure, so EXPTIME is one exposure;
+        # the line says how many went in and their total.
+        n = len(paths) if paths else int(info.get("ncombine") or 1)
+        if n > 1:
+            total = info.get("total_exptime") or n * info["exptime"]
+            return "{:>6.0f}s each, median of {} ({:.0f}s in all)".format(
+                info["exptime"], n, total)
+        return "{:>6.0f}s  {}".format(info["exptime"], os.path.basename(single))
+    print("  H-alpha : {:<9} {}".format(
+        ha_info["filter"], _what(ha_info, groups.get("Ha"), args.halpha)))
+    print("  red     : {:<9} {}".format(
+        red_info["filter"], _what(red_info, groups.get("R"), args.red)))
 
     pixel_scale = ha_info["pixel_scale"] or red_info["pixel_scale"]
     if pixel_scale:
