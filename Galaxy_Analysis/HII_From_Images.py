@@ -213,6 +213,15 @@ def is_difference_name(name):
     as H-alpha with the R continuum taken off ("M83_HaX12-R.fts")."""
     return bool(_DIFFERENCE.search(str(name)))
 
+_PRODUCT_HISTORY = re.compile(
+    r"multiplied\s+by|subtracted\b.*\.(?:fits?|fts)\b", re.I)
+
+def is_product_header(header):
+    """True when a HISTORY line says the frame was scaled by a factor or had
+    another FITS file subtracted from it. A constant sky ("Subtracted 9.0") does
+    not count."""
+    return any(_PRODUCT_HISTORY.search(line) for line in history_lines(header))
+
 def role_from_header(header):
     """The role named by the filter keyword, or None when there is no such keyword."""
     for key in ("FILTER", "FILTER1", "FILTNAME", "INSFILTE"):
@@ -258,7 +267,13 @@ def inspect(path):
     role = role_from_header(header)
     source = "the filter keyword in the header"
 
-    if role is None and is_difference_name(os.path.basename(path)):
+    if is_product_header(header):
+        # The header says it is this frame scaled, or another frame taken off
+        # it ("Multiplied by 11.5", "Subtracted ...R_SUB_Median_of_3"): not a
+        # frame through one filter, whatever its name or FILTER keyword says.
+        role = None
+        source = "its history (a scaled or subtracted product - not used)"
+    elif role is None and is_difference_name(os.path.basename(path)):
         # "HaX12-R" is H-alpha with 12 x R taken off: a product, not a frame
         # through either filter. Naming it R would put it in as the continuum.
         source = "the file name (a difference of two frames - not used)"
@@ -2484,7 +2499,15 @@ def load_frame(path, donor_path=None):
     if wcs is None and donor_path:
         reference, ref_wcs, _, ref_info = load_frame(donor_path)
         if ref_wcs is not None:
-            wcs, diag = wcs_from_reference(data, reference, ref_wcs)
+            try:
+                wcs, diag = wcs_from_reference(data, reference, ref_wcs)
+            except Exception as exc:
+                # astroalign finds no star pattern in common - typically a frame
+                # with the stars taken out, such as H-alpha minus continuum.
+                print("  {}: could not fit a plate solution against {} ({}: {})".format(
+                    os.path.basename(path), os.path.basename(donor_path),
+                    type(exc).__name__, exc), flush=True)
+                return data, None, bpm, info
             print(describe_wcs_fit(os.path.basename(path), diag))
             if info["pixel_scale"] is None:
                 info["pixel_scale"] = ref_info["pixel_scale"]
