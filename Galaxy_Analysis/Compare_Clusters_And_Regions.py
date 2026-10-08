@@ -705,11 +705,17 @@ def lookup_distance(name):
         import astropy.units as u
 
         coord = SkyCoord.from_name(name)
-        hit = Vizier(columns=["**"], row_limit=5).query_region(
+        # "_r" is VizieR's own distance of each row from the position asked
+        # about. The rows come back in catalogue order, not nearest first, so
+        # without it the first row could be a neighbouring galaxy inside the
+        # search circle and its distance would be used without a word.
+        hit = Vizier(columns=["**", "_r"], row_limit=20).query_region(
             coord, radius=2 * u.arcmin, catalog=DISTANCE_CATALOG)
         if not hit:
             return None
         table = hit[0]
+        if "_r" in table.colnames and len(table) > 1:
+            table = table[np.argsort(np.asarray(table["_r"], dtype=float))]
         for col in ("Dist", "<Dist>"):
             if col in table.colnames:
                 value = float(table[col][0])
@@ -1575,6 +1581,13 @@ def load_clusters(folder):
                          + "\n  the knot positions cannot be put on the sky "
                            "without one")
     sky = wcs.pixel_to_world(x, y)
+    # The cluster tool now writes each knot's RA and Dec itself, through the plate
+    # solution it checked against Gaia (and repaired, when the one in the header
+    # did not fit). Those are used when they are there.
+    if "ra" in [h.lower() for h in header] and "dec" in [h.lower() for h in header]:
+        ra, dec = columns_of(header, rows, "RA", "DEC")
+        if len(ra) == len(x):
+            sky = SkyCoord(ra * u.deg, dec * u.deg)
     return sky, os.path.basename(table), os.path.basename(path), head
 
 def load_regions(folder):

@@ -41,78 +41,98 @@ projects.
 
 WHAT YOU NEED
 
-  two FITS images of the same galaxy, one in B and one in V, plate-solved
-  (the reference stars are pulled from a catalogue by sky position)
+  a B and a V frame of the same galaxy (or a folder holding several of each),
+  plate-solved: the reference stars are pulled from a catalogue by sky
+  position. The plate solution is checked against Gaia and repaired if it
+  does not fit the image.
 
 WHAT IT ASKS YOU
 
-  galaxy name                    used to name the output files, and to look
-                                 the next two up
-  distance in Mpc                converts pixels to parsecs in the profile.
-                                 Offered from Cosmicflows-3 (Tully+ 2016)
-  colour excess E(B-V)           corrects brightness and colour for the dust
-                                 of our own galaxy. Offered from the Schlafly
-                                 & Finkbeiner (2011) dust maps via IRSA.
-                                 A_V is not asked for: it is 3.1 x E(B-V)
-  the two FITS paths
-  how many reference stars to calibrate against
+  the folder holding the frames  which file is B and which is V is read from
+                                 the FILTER keyword or the file name, and the
+                                 galaxy's name from OBJECT
+  distance in Mpc                shown from Cosmicflows-3 (Tully+ 2016);
+                                 Enter accepts it. Converts pixels to parsecs
+                                 and gives the absolute magnitude M_V
+  colour excess E(B-V)           shown from the Schlafly & Finkbeiner (2011)
+                                 dust maps via IRSA; Enter accepts it.
+                                 A_V is 3.1 x E(B-V)
 
-Every one of these has a default, and the two catalogue values are fetched by
-name. Press Enter to accept them or type your own.
+Everything can also be given on the command line, for example
+
+  python Blue_Clusters_From_Images.py --folder "D:/M83" --yes
+  python Blue_Clusters_From_Images.py --b B.fits --v V.fits --galaxy M83
+      --distance-mpc 4.7 --ebv 0.06 --catalog GAIA
 
 HOW IT WORKS
 
-  1. subtracts the background from each image and finds sources in both
-  2. measures each source with an aperture sized from its own FWHM
-  3. matches the B and V detections to each other by position
-  4. pulls reference stars from APASS9 through Vizier, matches them to the
-     detections, and calibrates the instrumental magnitudes against them
-  5. removes the foreground stars, leaving the galaxy's own sources
-  6. plots the colour-magnitude diagram, and the radial density profile of
-     what is left, in pixels and again in parsecs
+  1. subtracts the background from each frame, measures how wide a star is
+     in each (from bright stars that are not saturated), and finds the
+     sources in both
+  2. registers B onto V, and makes one list of sources on the V grid
+  3. measures every source in both bands at the same place on the sky,
+     through ONE aperture: twice the FWHM of the wider of the two frames.
+     Each flux gets an error from the photon noise and the measured sky
+     noise, and each source a saturation flag
+  4. checks the plate solution against Gaia, then calibrates against every
+     catalogue star that is matched once, not saturated, not crowded and
+     well measured (APASS9, or Gaia DR3 synthetic photometry, which is also
+     the fallback): a straight-line fit with a colour term and outlier
+     rejection,
+         B-V = a + c x (b-v)        V = v + ZP + k x (B-V)
+     The fit is printed with its scatter, and the run stops if fewer than
+     5 stars remain or if the colours run the wrong way (B and V swapped)
+  5. removes the dust of our own galaxy, and the foreground stars
+  6. keeps as blue knots the sources with -0.5 <= (B-V)0 <= 0.5 and a B-V
+     error of at most 0.2 mag, and plots the colour-magnitude diagrams and
+     the radial density profile
 
 WHAT YOU GET
 
-Around twenty files, all named after the galaxy. They go into a sub-folder
-called result_CMD, created next to your images - the folder holding your data
-comes out of a run exactly as it went in, with the frames only read.
+Every run writes a new folder beside the frames,
+result_CMD_<galaxy>_<date>_<time>, so a second run never overwrites the first
+and nothing from an earlier run can be mistaken for this one. The folder
+holding your data is otherwise left exactly as it was.
 
 That is a lot of files, so here is what each one is and which you actually
-want to look at. Below, NAME stands for the galaxy name you typed.
+want to look at. Below, NAME stands for the galaxy name.
 
-  A by-product, kept because it is what everything is measured on:
+  run_summary.txt                 every number the run used and found
 
-    <input>_bgsub.fits            each input image with its background
-                                  subtracted. Useful if you want to check a
-                                  source by eye.
+  By-products, kept because they are what everything is measured on:
+
+    <input>_bgsub.fits            each input frame with its median level
+                                  subtracted
+    NAME_B_combined.fits          when the folder held several exposures
+    NAME_V_combined.fits          of a filter: their median
 
   Stage 1 - everything that was measured
 
-    NAME_photometry_results.csv   every source detected in BOTH images and
-                                  matched between them: position, FWHM,
-                                  aperture radius, flux in B and in V.
-                                  Instrumental values, not yet calibrated.
-    NAME_reference_stars.csv      the APASS9 stars found in the field, with
-                                  their catalogue B and V. These set the zero
-                                  point. If the calibration looks wrong, look
-                                  here first - are there enough of them, and
-                                  are they spread across the frame?
+    NAME_photometry_results.csv   every source measured in both bands:
+                                  position in each frame, RA and Dec,
+                                  fluxes and instrumental magnitudes with
+                                  errors, peak pixel, saturation flag
+    NAME_reference_stars.csv      the catalogue stars matched to sources,
+                                  whether each was used in the calibration,
+                                  and its residual. If the calibration looks
+                                  wrong, look here first
 
   Stage 2 - calibrated, still with foreground stars in it
 
-    NAME_calibrated_photometry.csv            real magnitudes
+    NAME_calibrated_photometry.csv            B, V, B-V with errors, before
+                                              (_obs) and after the Galactic
+                                              dust correction, and M_V
     NAME_calibrated_photometry_with_color.csv the same, with B-V added
     NAME_calibrated_photometry_CMD.png        colour-magnitude diagram
     NAME_V_sources.png                        the V image with every measured
                                               source circled
-    NAME_B_sources.png                        the same for B. Compare the two:
-                                              they should find the same things
-                                              in the same places
+    NAME_B_sources.png                        the same for B, at the same
+                                              sources
 
   Stage 3 - foreground stars removed
 
-    Stars of our own galaxy lie in front of the target and are not part of
-    it. They are matched against the catalogue and taken out.
+    Catalogue stars, Gaia stars with a significant parallax or proper motion,
+    and everything beyond R25 are taken out.
 
     NAME_calibrated_photometry_no_stars.csv
     NAME_calibrated_photometry_no_stars_with_color.csv
@@ -121,9 +141,7 @@ want to look at. Below, NAME stands for the galaxy name you typed.
 
   Stage 4 - blue knots only
 
-    What is left is cut on colour, keeping the blue sources: the young
-    star-forming regions in the arms. THIS IS THE RESULT the projects are
-    usually after.
+    THIS IS THE RESULT the projects are usually after.
 
     NAME_calibrated_photometry_no_stars_color_filtered.csv
     NAME_calibrated_photometry_no_stars_color_filtered_with_color.csv
@@ -136,30 +154,30 @@ want to look at. Below, NAME stands for the galaxy name you typed.
   Stage 5 - how the knots are distributed
 
     NAME_radial_density_profile.csv       knots per square pixel, by radius
-    NAME_radial_density_profile_pc.csv    the same in parsecs, using the
-                                          distance you gave
+    NAME_radial_density_profile_pc.csv    the same in parsecs
     NAME_radial_density_profile_step.csv     the same as a step function
     NAME_radial_density_profile_step_pc.csv  the step function in parsecs
     NAME_radial_density_profile_step.png       the plot, in pixels
     NAME_radial_density_profile_step_pc.png    the plot, in parsecs
+    NAME_deprojected_...                       the profile deprojected several
+                                               ways, with the frame's coverage
 
   If you look at four files, look at these:
 
-    NAME_reference_stars.csv                   did the calibration have
-                                               anything to work with
+    run_summary.txt                            did the calibration work
     NAME_V_sources_color_filtered.png          did it find the arms
     NAME_..._color_filtered_CMD.png            the diagram
     NAME_radial_density_profile_step_pc.png    the arms, in numbers
 
-  A _with_color file is its parent file with the B-V column added. If you
-  only want one, take the _with_color one.
+  In the diagrams, saturated sources and sources with a B-V error above 0.3
+  mag are not drawn; they stay in the tables.
 
-The parameters at the top of this file are tuned for the Kinneret frames
-these projects use. On very different data - a much smaller telescope, a
-much fainter galaxy - the detection threshold and the matching tolerances
-are the first things to look at.
+The parameters at the top of the Blue_Clusters section of this file are
+tuned for the Kinneret and LCO frames these projects use. On very different
+data - a much smaller telescope, a much fainter galaxy - the detection
+threshold is the first thing to look at.
 
-Usage: run it. Every question has a default; press Enter to accept it.
+Usage: run it, and answer the questions; Enter accepts what is shown.
 """
 
 
@@ -398,7 +416,11 @@ def scan_folder(folder, recursive=True):
     found = []
     for root, dirs, files in os.walk(folder):
         # Do not walk into what an earlier run wrote.
-        dirs[:] = [d for d in dirs if d.lower() not in OUTPUT_FOLDERS]
+        # Every run now writes a folder of its own - result_CMD_<galaxy>_<date>,
+        # result_HII_..., result_StarFormation_... - so anything whose name
+        # starts with "result" is output, not data.
+        dirs[:] = [d for d in dirs if d.lower() not in OUTPUT_FOLDERS
+                   and not d.lower().startswith("result")]
         for name in sorted(files):
             if not name.lower().endswith(FITS_SUFFIXES):
                 continue
@@ -1565,11 +1587,17 @@ def lookup_distance(name):
         import astropy.units as u
 
         coord = SkyCoord.from_name(name)
-        hit = Vizier(columns=["**"], row_limit=5).query_region(
+        # "_r" is VizieR's own distance of each row from the position asked
+        # about. The rows come back in catalogue order, not nearest first, so
+        # without it the first row could be a neighbouring galaxy inside the
+        # search circle and its distance would be used without a word.
+        hit = Vizier(columns=["**", "_r"], row_limit=20).query_region(
             coord, radius=2 * u.arcmin, catalog=DISTANCE_CATALOG)
         if not hit:
             return None
         table = hit[0]
+        if "_r" in table.colnames and len(table) > 1:
+            table = table[np.argsort(np.asarray(table["_r"], dtype=float))]
         for col in ("Dist", "<Dist>"):
             if col in table.colnames:
                 value = float(table[col][0])
@@ -2508,6 +2536,17 @@ def frames_from_folder(folder, roles):
              for role in roles},
             to_combine, name)
 
+def header_number(header, keys):
+    """The first of these header keywords that holds a positive number, or None."""
+    for key in keys:
+        try:
+            value = float(header.get(key))
+        except (TypeError, ValueError):
+            continue
+        if value == value and value > 0:
+            return value
+    return None
+
 def load_frame(path, donor_path=None):
     """Open a FITS file and return the science image, its WCS and a bad-pixel mask.
 
@@ -2557,6 +2596,17 @@ def load_frame(path, donor_path=None):
         "exptime": float(header.get("EXPTIME", 1.0) or 1.0),
         "pixel_scale": header.get("PIXSCALE", None),
         "object": str(header.get("OBJECT", "?")),
+        # What the photometry needs to know about the detector, carried along
+        # so that a frame this pipeline writes still says it.
+        "saturate": header_number(header, ("SATURATE", "MAXLIN", "SATLEVEL")),
+        # Electrons per ADU. EGAIN first: on some cameras GAIN is the gain
+        # SETTING (51 on the Kinneret colour camera), not electrons per ADU.
+        "gain": next((g for g in (header_number(header, (k,)) for k in
+                                  ("EGAIN", "GAIN")) if g and g < 20), None),
+        "rdnoise": header_number(header, ("RDNOISE", "READNOIS", "RON")),
+        "ncombine": int(header_number(header, ("NCOMBINE",)) or 1),
+        "combtype": str(header.get("COMBTYPE", "")),
+        "date": str(header.get("DATE-OBS", "")),
     }
     hdul.close()
 
@@ -2722,7 +2772,35 @@ def combine_exposures(paths, donor_path=None, label="", band_rows=512,
         return reference, ref_wcs, ref_bpm, ref_info
 
     print("Combining {} {} exposures".format(len(paths), label or "frames"))
-    stack = [reference]
+    # Every exposure is scaled to the exposure time of the first before the
+    # median is taken. A median of a 60 s and a 120 s frame that were not
+    # scaled is neither of them: each pixel takes whichever value happens to
+    # fall in the middle. Before scaling, pixels at the detector's saturation
+    # level are blanked, so that a star saturated in the long exposures is
+    # measured from the short ones.
+    ref_exptime = float(ref_info.get("exptime") or 1.0)
+    sat_levels, sat_masks = [], []
+
+    def scaled(frame, info, name):
+        exptime = float(info.get("exptime") or ref_exptime)
+        ratio = ref_exptime / exptime
+        sat = info.get("saturate")
+        if sat:
+            frame = np.array(frame, dtype=np.float32, copy=True)
+            with np.errstate(invalid="ignore"):
+                hit = frame >= SATURATION_FRACTION * sat
+            frame[hit] = np.nan
+            sat_masks.append(hit)
+            sat_levels.append(sat * ratio)
+        else:
+            sat_levels.append(None)
+        if abs(ratio - 1.0) > 1e-6:
+            print("  {}: {:.0f} s, scaled by {:.3f} to {:.0f} s".format(
+                name, exptime, ratio, ref_exptime))
+            frame = frame * np.float32(ratio)
+        return frame
+
+    stack = [scaled(reference, ref_info, os.path.basename(paths[0]))]
     total_exptime = float(ref_info.get("exptime") or 0.0)
 
     for path in paths[1:]:
@@ -2751,7 +2829,7 @@ def combine_exposures(paths, donor_path=None, label="", band_rows=512,
             data = refine_alignment(reference, data, "  " + name,
                                     positions=positions)
 
-        stack.append(data)
+        stack.append(scaled(data, info, name))
         total_exptime += float(info.get("exptime") or 0.0)
 
     ny, nx = reference.shape
@@ -2762,13 +2840,57 @@ def combine_exposures(paths, donor_path=None, label="", band_rows=512,
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             combined[y0:y1] = np.nanmedian(band, axis=0)
+            # A pixel saturated in every exposure has nothing left to take the
+            # median of. It is set to the saturation level, so that it stays a
+            # bright pixel the photometry flags as saturated, not a hole.
+            if sat_masks:
+                hole = ~np.isfinite(combined[y0:y1])
+                hole &= np.any(np.stack([m[y0:y1] for m in sat_masks], axis=0), axis=0)
+                if hole.any():
+                    combined[y0:y1][hole] = max(s for s in sat_levels if s)
 
     print("  median of {} exposures, total exposure {:.0f}s, noise lower by about "
           "a factor of {:.1f}".format(len(stack), total_exptime, len(stack) ** 0.5))
 
+    # The median sits at the level of ONE exposure of the first frame's length,
+    # so that is what EXPTIME says. It used to say the total, which made the
+    # header claim several times the exposure the pixel values have. The total
+    # is kept in TOTEXP, and NCOMBINE says how many frames went in - the noise
+    # of a median of N frames is that of one frame with N x 2/pi times the gain.
     info = dict(ref_info)
-    info["exptime"] = total_exptime
+    info["exptime"] = ref_exptime
+    info["total_exptime"] = total_exptime
+    info["ncombine"] = len(stack)
+    info["combtype"] = "median"
+    if all(s for s in sat_levels):
+        # Pixels below the level of the shortest exposure came from at least
+        # one unsaturated frame.
+        info["saturate"] = max(sat_levels)
+    else:
+        info["saturate"] = None
+    # Scaling a longer exposure down lowers its noise along with its counts,
+    # as a higher gain would. Written so that GAIN x NCOMBINE is the gain of the
+    # total exposure expressed at this frame's level.
+    if info.get("gain"):
+        info["gain"] = float(info["gain"]) * total_exptime / ref_exptime / len(stack)
     return combined, ref_wcs, ref_bpm, info
+
+SATURATION_FRACTION = 0.8   # a pixel above this fraction of SATURATE counts as saturated
+
+def new_run_folder(base, tool, galaxy):
+    """A folder of its own for this run: result_<tool>_<galaxy>_<date>_<time>.
+
+    Every run used to write into the same place under the same names, so a
+    second run overwrote the first, and a run that stopped half way left the
+    previous run's files sitting beside its own, looking current. A new folder
+    each time means nothing a run reads or shows can be left over from another.
+    """
+    import datetime
+    name = re.sub(r"[^A-Za-z0-9_.-]+", "_", (galaxy or "galaxy").strip()) or "galaxy"
+    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    path = os.path.join(base or os.getcwd(), "result_{}_{}_{}".format(tool, name, stamp))
+    os.makedirs(path, exist_ok=True)
+    return path
 
 def output_prefix(given, fallback_dir, galaxy):
     """Turn what the person typed into a stem for the output files.
@@ -2832,6 +2954,15 @@ def save_frame(path, data, wcs=None, info=None, history=()):
             header["OBJECT"] = info["object"]
         if info.get("pixel_scale"):
             header["PIXSCALE"] = float(info["pixel_scale"])
+        for key, word in (("saturate", "SATURATE"), ("gain", "GAIN"),
+                          ("rdnoise", "RDNOISE"), ("total_exptime", "TOTEXP")):
+            if info.get(key):
+                header[word] = float(info[key])
+        if (info.get("ncombine") or 1) > 1:
+            header["NCOMBINE"] = int(info["ncombine"])
+            header["COMBTYPE"] = str(info.get("combtype") or "median")
+        if info.get("date"):
+            header["DATE-OBS"] = str(info["date"])
     pixels = np.asarray(data, dtype="float32")
     blank = ~np.isfinite(pixels)
     if blank.any():
@@ -4090,117 +4221,262 @@ def describe_choice(diag):
 # Blue_Clusters_From_Images.py
 # --------------------------------------------------------------------------
 
-APERTURE_SCALE = 2
+from scipy.spatial import cKDTree
+from photutils.aperture import ApertureStats
 
-ANNULUS_INNER_SCALE = 2.5
-
-ANNULUS_OUTER_SCALE = 3
-
-FWHM_WINDOW_SIZE = 10
-
+# ------------------- Parameters -------------------
+# Measuring the sources
+APERTURE_SCALE = 2               # aperture radius = this x the typical star FWHM of the
+                                 # frames - ONE radius for every source, in both bands
+ANNULUS_INNER_SCALE = 2.5        # the sky ring around each source, in units of the
+ANNULUS_OUTER_SCALE = 3          # aperture radius
+FWHM_WINDOW_SIZE = 10            # half-size of the box a source's width is measured in
 DAOFIND_FWHM = None              # None = measure it from the data (recommended)
-
 SEEING_FALLBACK = 4.0            # Used only if the measurement cannot be made
-
 SEEING_MIN, SEEING_MAX = 1.5, 15.0   # Sanity range for the measured value, pixels
-
 SIGMA_CLIP = 3.0                 # Sigma clipping level for background statistics
-
 DETECTION_THRESHOLD_SIGMA = 3.0  # Detection threshold in units of background sigma
-
 PEAK_MIN_STD = 3.0               # Minimum peak signal-to-noise ratio for a detection
-
 BACKGROUND_BOX_SIZE = 48         # Grid cell for the local background, pixels
-
 BACKGROUND_FILTER_SIZE = 3       # Median filter applied across the grid
-
 SEEING_MEASURED = {}
-
 BG_SUB_FUNC = np.nanmedian       # Function used to compute and subtract background level
-
-MATCH_SCALE = 1.5                # Tolerance as a multiple of the measured FWHM
-
-MATCH_TOLERANCE_MIN = 3.0        # ...but never tighter than this, in pixels
-
 ASTROALIGN_MAX_SCALE_ERROR = 0.05  # 5%
+GAIN_E_PER_ADU = 1.0             # electrons per ADU, used only if the header has none
+READ_NOISE_E = 5.0               # read noise in electrons, used only if the header has none
+EDGE_MARGIN_PX = 30
 
-REF_MAG_LIMIT = 20.0             # Catalog magnitude limit for selecting reference stars
+# Calibration
+CALIB_CATALOGUE = "APASS"        # default; "GAIA" for Gaia DR3 synthetic B and V
+CALIB_MATCH_RADIUS = 3.0         # arcsec: a catalogue star and a source this close are one
+XY_MATCH_TOLERANCE = 3.0         # pixels, on the V grid, after the plate solution is checked
+CALIB_MIN_STARS = 5              # fewer calibration stars than this and the run stops
+CALIB_MAX_INST_ERR = 0.05        # mag; only well-measured stars set the calibration
+CALIB_MAX_CAT_ERR = 0.10         # mag; and only well-measured catalogue entries
+CALIB_CLIP_SIGMA = 3.0           # stars further than this from the fit are left out
+CALIB_MIN_OUTSIDE = 10           # use only stars beyond R25 when at least this many are
+WCS_CHECK_MIN_FRACTION = 0.5     # share of bright stars that must have a Gaia star nearby
 
-REF_CATALOG = "II/336/apass9"    # Reference star catalog to use (APASS9 with B,V magnitudes)
+# The blue knots
+CMD_COLOR_MIN = -0.5             # a blue knot has (B-V)0 between these two values
+CMD_COLOR_MAX = 0.5
+KNOT_MAX_BV_ERR = 0.2            # and a B-V error no larger than this, in mag
+CMD_MAX_BV_ERR = 0.3             # sources noisier than this are left out of the diagrams
+FOREGROUND_TOL = 3.0             # pixels: a source this close to a Gaia foreground star is it
+Step_size = 10                   # Resolution of The Blue Knots Density Diagram
 
-CATALOG_FLUX_MATCH_SCALE = 1.5   # Tolerance as a multiple of the measured FWHM
+R_V = 3.1                        # A_V / E(B-V) for dust in our own galaxy
 
-CATALOG_FLUX_MATCH_MIN = 3.0     # ...but never tighter than this, in pixels
+ARGS = None                      # the command-line arguments, if any
 
-REF_CROSS_BAND_TOLERANCE = 2.0   # B and V must land on the same object, within
 
-REF_ZP_OUTLIER_SIGMA = 3.0       # Reject a reference star whose implied zero
+# ------------------- Questions -------------------
 
-CALIB_NUM_STARS = None           # Number of reference stars for calibration (user will be asked)
+def _accept_defaults():
+    return ARGS is not None and getattr(ARGS, "yes", False)
 
-CMD_COLOR_MIN = -0.5   # left limit of x-axis
 
-CMD_COLOR_MAX = 0.5    # right limit of x-axis
+def _ask(prompt, default, cast=str, choices=None):
+    """Ask one question. Enter accepts the default shown in brackets.
 
-REMOVE_TOL = 10.0  # pixel tolerance for matching sources to catalog stars
+    Only an empty answer means "the default". An answer that cannot be read is
+    refused and the question asked again - it used to be replaced by the
+    default without a word, so a mistyped distance became 10 Mpc. A default of
+    None means there is none: an answer is needed.
+    """
+    if _accept_defaults():
+        if default is None:
+            sys.exit(f"[input] '{prompt}' has no default, so --yes cannot answer "
+                     f"it - give it on the command line")
+        print(f"{prompt} [{default}]: (accepted, --yes)")
+        return default
+    shown = "" if default is None else f" [{default}]"
+    while True:
+        s = input(f"{prompt}{shown}: ").strip()
+        if s == "":
+            if default is None:
+                print("   an answer is needed here")
+                continue
+            return default
+        try:
+            v = cast(s)
+        except Exception:
+            print(f"   could not read '{s}' - try again")
+            continue
+        if choices and v not in choices:
+            print(f"   answer one of: {', '.join(choices)}")
+            continue
+        return v
 
-FOREGROUND_TOL = 3.0
-
-Step_size = 10    # Resolution of The Blue Knots Density Diagram 
 
 def _norm_path(p: str) -> str:
     """Remove extra quotes and normalize filesystem path."""
     p = p.strip().strip('"').strip("'")
-    return os.path.normpath(p)
+    return os.path.normpath(p) if p else ""
 
-def _ask(prompt, default, cast=str):
-    """Ask user for input with default and type casting."""
-    s = input(f"{prompt} [{default}]: ").strip()
-    if not s:
-        return default
+
+def offered(label, value, source, unit="", override=None):
+    """A catalogue value, shown with where it came from, and accepted with
+    Enter or replaced by typing another. A value given on the command line
+    is used as it is."""
+    if override is not None:
+        print(f"{label}: {override}{unit} (from the command line)")
+        return float(override)
+    if value is None:
+        print(f"[lookup] no {label.lower()} found in the catalogue - please give one")
+        return float(_ask(label, None, float))
+    print(f"[lookup] {label}: {value:g}{unit} ({source})")
+    return float(_ask(f"{label} - Enter to accept, or type another", value, float))
+
+
+def stop(message):
+    """Stop the run with a message that says what to do."""
+    print("")
+    print("*" * 78)
+    print("STOPPED: " + message)
+    print("*" * 78)
+    raise SystemExit(1)
+
+
+def loud(message):
+    print("")
+    print("!" * 78)
+    print(message)
+    print("!" * 78)
+    print("")
+
+
+# ------------------- Reading frames and the detector -------------------
+
+def read_image(path):
+    """(data as float32, header) from the first HDU that holds a 2-D image.
+
+    The first HDU is not always it: an LCO .fits.fz frame keeps its image in
+    the second, and reading the first returned nothing.
+    """
+    with fits.open(path) as hdul:
+        for hdu in hdul:
+            if hdu.data is not None and getattr(hdu.data, "ndim", 0) == 2:
+                header = hdu.header.copy()
+                for key in ("XTENSION", "PCOUNT", "GCOUNT", "BZERO", "BSCALE",
+                            "BLANK", "ZIMAGE", "ZBITPIX",
+                            "ZNAXIS", "ZNAXIS1", "ZNAXIS2", "ZTILE1", "ZTILE2",
+                            "ZCMPTYPE", "ZQUANTIZ", "ZDITHER0", "ZSIMPLE", "ZEXTEND"):
+                    header.remove(key, ignore_missing=True, remove_all=True)
+                return np.asarray(hdu.data, dtype=np.float32), header
+    raise RuntimeError(f"no 2-D image in {path}")
+
+
+def combined_count(header):
+    """How many frames went into this file, and how they were combined."""
+    n = header.get("NCOMBINE")
+    how = str(header.get("COMBTYPE", "median")).lower()
     try:
-        return cast(s)
-    except Exception:
-        return default
+        if n and int(n) > 1:
+            return int(n), _combine_kind(how)
+    except (TypeError, ValueError):
+        pass
+    for line in header.get("HISTORY", []):
+        m = re.search(r"(median|average|mean|sum)\s+of\s+(\d+)\s+"
+                      r"(?:images|exposures|frames)", str(line), re.I)
+        if m:
+            return int(m.group(2)), _combine_kind(m.group(1))
+    return 1, "single"
 
-def subtract_background_and_save(path):
-    """Subtract background (median or other function) from FITS and save new file."""
-    data, hdr = fits.getdata(path, header=True)
-    bg_val = BG_SUB_FUNC(data)
-    data_sub = data - bg_val
-    # into result_CMD, not next to the frames: the folder holding your data
-    # should come out of a run exactly as it went in.
-    out_dir = os.path.join(os.path.dirname(path) or os.getcwd(), "result_CMD")
-    os.makedirs(out_dir, exist_ok=True)
-    stem = os.path.splitext(os.path.basename(path))[0]
+
+def _combine_kind(word):
+    word = str(word).lower()
+    return "median" if "med" in word else "sum" if "sum" in word else "mean"
+
+
+def detector_gain(header):
+    """Electrons per ADU of THIS file, and where the number came from.
+
+    EGAIN is preferred: on some cameras GAIN is the gain SETTING (51 on the
+    Kinneret colour camera), not electrons per ADU. A median of N frames has
+    the noise of one frame with N x 2/pi times the gain, a mean of N frames
+    N times; a sum keeps the gain of one frame.
+    """
+    gain, source = None, None
+    for key in ("EGAIN", "GAIN"):
+        try:
+            v = float(header.get(key))
+        except (TypeError, ValueError):
+            continue
+        if 0 < v < 20:
+            gain, source = v, key
+            break
+    if gain is None:
+        gain, source = GAIN_E_PER_ADU, "default constant"
+    n, how = combined_count(header)
+    if n > 1 and how == "sum":
+        return gain, f"{source} (sum of {n} frames)"
+    if n > 1:
+        factor = n * (2.0 / np.pi if how == "median" else 1.0)
+        return gain * factor, f"{source} x {factor:.1f} ({how} of {n} frames)"
+    return gain, source
+
+
+def read_noise(header):
+    for key in ("RDNOISE", "READNOIS", "RDNOISE1", "RON"):
+        try:
+            v = float(header.get(key))
+            if v > 0:
+                return v, key
+        except (TypeError, ValueError):
+            continue
+    return READ_NOISE_E, "default constant"
+
+
+def saturation_level(raw, header):
+    """The pixel value above which a source counts as saturated, and how it
+    was found: from SATURATE (or MAXLIN) in the header when there is one,
+    otherwise from the pile-up of saturated pixels at the top of the image's
+    histogram."""
+    for key in ("SATURATE", "MAXLIN", "SATLEVEL"):
+        try:
+            v = float(header.get(key))
+        except (TypeError, ValueError):
+            continue
+        if v > 0:
+            return SATURATION_FRACTION * v, f"{SATURATION_FRACTION:g} x {key} ({v:g})"
+    m = EDGE_MARGIN_PX
+    inner = raw[m:-m, m:-m] if min(raw.shape) > 4 * m else raw
+    inner = inner[np.isfinite(inner)]
+    top = float(np.sort(inner)[-20])
+    high = inner[inner > 0.4 * top]
+    level, how = top, "the image's maximum"
+    if high.size > 200:
+        counts, edges = np.histogram(high, bins=60, range=(0.4 * top, top))
+        for i in range(10, len(counts)):
+            before = np.median(counts[i - 10:i])
+            if counts[i] >= 20 and counts[i] > 2.0 * max(before, 1.0):
+                level = float(edges[i])
+                how = "the pile-up of saturated pixels in the histogram"
+                break
+    return SATURATION_FRACTION * level, f"{SATURATION_FRACTION:g} x {how} ({level:.0f})"
+
+
+def subtract_background_and_save(path, out_dir):
+    """Subtract the frame's median level and save the result in out_dir.
+
+    Returns (path written, raw pixels, background-subtracted pixels, header).
+    """
+    raw, hdr = read_image(path)
+    bg_val = float(BG_SUB_FUNC(raw))
+    data_sub = raw - np.float32(bg_val)
+    stem = os.path.basename(path)
+    for suffix in (".fits.fz", ".fits", ".fit", ".fts"):
+        if stem.lower().endswith(suffix):
+            stem = stem[:-len(suffix)]
+            break
     out_path = os.path.join(out_dir, stem + "_bgsub.fits")
-    fits.writeto(out_path, data_sub, hdr, overwrite=True)
+    fits.PrimaryHDU(data=data_sub, header=hdr).writeto(out_path, overwrite=True)
     print(f"[bgsub] wrote {out_path} (bg={bg_val:.3f})")
-    return out_path
+    return out_path, raw, data_sub, hdr
 
-def compute_fwhm(data, x, y, size=FWHM_WINDOW_SIZE):
-    """Measure FWHM around a light source."""
-    x_min, x_max = int(x-size), int(x+size)
-    y_min, y_max = int(y-size), int(y+size)
-    if x_min < 0 or y_min < 0 or x_max >= data.shape[1] or y_max >= data.shape[0]:
-        # A source too close to the edge for a full measuring box. There are
-        # hundreds of these on a typical frame; printing one line each buried
-        # everything else, so they are counted and reported once at the end.
-        return None
 
-    sub_image = data[y_min:y_max, x_min:x_max]
-    smoothed = gaussian_filter(sub_image, sigma=2)
-    peak = np.max(smoothed)
-    half_max = peak / 2
-    above_half_max = smoothed > half_max
-    indices = np.argwhere(above_half_max)
-    if indices.size > 0:
-        min_x, max_x = indices[:, 1].min(), indices[:, 1].max()
-        min_y, max_y = indices[:, 0].min(), indices[:, 0].max()
-        fwhm_x = max_x - min_x
-        fwhm_y = max_y - min_y
-        return np.mean([fwhm_x, fwhm_y])
-    return None
+# ------------------- Finding and measuring the sources -------------------
 
 def local_background(data):
     """Background and noise on a coarse grid, so a galaxy's own light does not
@@ -4210,14 +4486,14 @@ def local_background(data):
                         sigma_clip=SigmaClip(sigma=SIGMA_CLIP),
                         bkg_estimator=MedianBackground())
 
-def star_width(data, x, y, half=12):
+
+def star_width(data, x, y, half=12, sky=0.0):
     """Width at half maximum of one source, in pixels, measured on the data as
-    it is. compute_fwhm() smooths first, which suits aperture sizing but adds
-    about 3 pixels; a detection kernel needs the true width."""
+    it is, after its local sky is taken off."""
     x, y = int(round(x)), int(round(y))
     if x - half < 0 or y - half < 0 or x + half >= data.shape[1] or y + half >= data.shape[0]:
         return np.nan
-    cut = data[y - half:y + half, x - half:x + half]
+    cut = data[y - half:y + half, x - half:x + half] - sky
     peak = cut.max()
     if not np.isfinite(peak) or peak <= 0:
         return np.nan
@@ -4226,25 +4502,42 @@ def star_width(data, x, y, half=12):
         return np.nan
     return np.mean([np.ptp(idx[:, 1]) + 1, np.ptp(idx[:, 0]) + 1])
 
-def estimate_seeing(data, background, rms, band):
-    """Measure how wide a star actually is in this frame.
 
-    Detect once at a high threshold to get bright, unambiguous stars, measure
-    each one, and take the median. Nothing about the telescope is assumed and
-    no header keyword is required, so this works on any frame.
-    """
+def _xy_of(table):
+    """x and y of a DAOStarFinder table. photutils 3.0 renamed xcentroid and
+    ycentroid to x_centroid and y_centroid; both are accepted."""
+    names = table.colnames
+    xs = "x_centroid" if "x_centroid" in names else "xcentroid"
+    ys = "y_centroid" if "y_centroid" in names else "ycentroid"
+    return np.asarray(table[xs], float), np.asarray(table[ys], float)
+
+
+def estimate_seeing(data, background, rms, band, raw=None, sat_level=None):
+    """How wide a star is in this frame: the median width of bright stars that
+    are NOT saturated. A saturated star has a flat top, so its width at half
+    the flat top says nothing about the seeing - and the aperture of every
+    source is sized from this number."""
     try:
         found = DAOStarFinder(fwhm=SEEING_FALLBACK, threshold=20.0 * rms)(data - background)
         if found is not None and len(found) >= 5:
-            brightest = found[np.argsort(found['flux'])][-200:]
-            widths = [star_width(data - background, s['xcentroid'], s['ycentroid'])
-                      for s in brightest]
-            widths = np.asarray(widths, dtype=float)
-            seeing = np.nanmedian(widths)
-            if np.isfinite(seeing) and SEEING_MIN <= seeing <= SEEING_MAX:
-                print(f"   {band}: stars are {seeing:.2f} px wide"
-                      f" (measured on {int(np.isfinite(widths).sum())} bright stars)", flush=True)
-                return float(seeing)
+            fx, fy = _xy_of(found)
+            flux = np.asarray(found['flux'], float)
+            if raw is not None and sat_level is not None:
+                peaks = np.array([np.nanmax(raw[max(int(round(y)) - 1, 0):int(round(y)) + 2,
+                                                max(int(round(x)) - 1, 0):int(round(x)) + 2])
+                                  for x, y in zip(fx, fy)])
+                ok = peaks < sat_level
+                fx, fy, flux = fx[ok], fy[ok], flux[ok]
+            if len(fx) >= 5:
+                order = np.argsort(flux)[-200:]
+                widths = np.asarray([star_width(data - background, fx[i], fy[i])
+                                     for i in order], dtype=float)
+                seeing = np.nanmedian(widths)
+                if np.isfinite(seeing) and SEEING_MIN <= seeing <= SEEING_MAX:
+                    print(f"   {band}: stars are {seeing:.2f} px wide (median of "
+                          f"{int(np.isfinite(widths).sum())} bright unsaturated stars)",
+                          flush=True)
+                    return float(seeing)
         print(f"   {band}: could not measure the star width, using"
               f" {SEEING_FALLBACK} px", flush=True)
     except Exception as exc:
@@ -4252,1123 +4545,1122 @@ def estimate_seeing(data, background, rms, band):
               f" {SEEING_FALLBACK} px", flush=True)
     return float(SEEING_FALLBACK)
 
-def process_fits(filename, band, window=None):
-    """Detect sources, perform aperture photometry and return results.
 
-    `window` is (y0, y1, x0, x1): the part of the frame the galaxy occupies. Both
-    of the expensive steps here are paid by the pixel and by the source - finding
-    sources runs a detector across every pixel, and measuring them is a loop with
-    one turn per source - so working outside the galaxy costs twice and returns
-    nothing. On a 61-megapixel field of M33 only about a third of the frame holds
-    the galaxy at all.
+def detect_sources(data, raw, band, sat_level, window=None):
+    """Find the sources in one frame. Returns (x, y, flux estimate) in the
+    coordinates of the whole frame, and the frame's typical star width.
 
-    Positions come back in the coordinates of the whole frame regardless, so
-    nothing downstream needs to know a window was used.
+    `window` is (y0, y1, x0, x1): the part of the frame the galaxy occupies.
+    Finding sources is paid for by the pixel, so working outside the galaxy
+    costs time and returns nothing.
     """
-    hdul = fits.open(filename)
-    data = hdul[0].data
-    hdul.close()
-
     x_offset = y_offset = 0
+    work, work_raw = data, raw
     if window is not None:
         y0, y1, x0, x1 = window
-        data = data[y0:y1, x0:x1]
+        work, work_raw = data[y0:y1, x0:x1], raw[y0:y1, x0:x1]
         x_offset, y_offset = x0, y0
         print(f"   {band}: working on {x1 - x0} x {y1 - y0} pixels around the "
               f"galaxy", flush=True)
 
     print(f"Finding sources in the {band} image...", flush=True)
-    bkg = local_background(data)
+    bkg = local_background(work)
     rms = float(np.median(bkg.background_rms))
     print(f"   {band}: local sky runs from {bkg.background.min():.1f}"
           f" to {bkg.background.max():.1f} counts, noise {rms:.2f}", flush=True)
 
-    fwhm_detect = DAOFIND_FWHM if DAOFIND_FWHM else estimate_seeing(
-        data, bkg.background, rms, band)
-    SEEING_MEASURED[band] = fwhm_detect
+    fwhm = DAOFIND_FWHM if DAOFIND_FWHM else estimate_seeing(
+        work, bkg.background, rms, band, work_raw, sat_level)
+    SEEING_MEASURED[band] = fwhm
 
-    threshold = DETECTION_THRESHOLD_SIGMA * rms
-    daofind = DAOStarFinder(fwhm=fwhm_detect, threshold=threshold)
-    sources = daofind(data - bkg.background)
+    sources = DAOStarFinder(fwhm=fwhm, threshold=DETECTION_THRESHOLD_SIGMA * rms)(
+        work - bkg.background)
     if sources is None or len(sources) == 0:
         print(f"   {band}: no sources found", flush=True)
-        return []
+        return np.empty(0), np.empty(0), np.empty(0), fwhm
     sources = sources[sources['peak'] > PEAK_MIN_STD * rms]
+    x, y = _xy_of(sources)
+    f = np.asarray(sources["flux"], float)
+    order = np.argsort(f)[::-1]
+    x, y, f = x[order] + x_offset, y[order] + y_offset, f[order]
 
-    # The frame with the smooth galaxy light removed, used for measuring widths.
-    flat = data - bkg.background
+    # One source found two or three times over - a saturated star with a flat
+    # top, or a knot with two peaks inside one seeing disc - would otherwise be
+    # measured as several sources sharing one aperture. Two sources closer than
+    # one FWHM cannot be measured apart, so only the brightest is kept.
+    keep = np.ones(len(x), dtype=bool)
+    tree = cKDTree(np.column_stack([x, y]))
+    for i in range(len(x)):
+        if keep[i]:
+            for j in tree.query_ball_point([x[i], y[i]], r=fwhm):
+                if j > i:
+                    keep[j] = False
+    print(f"   {band}: {len(x):,} detections, {int((~keep).sum()):,} of them "
+          f"within one FWHM of a brighter one and dropped", flush=True)
+    return x[keep], y[keep], f[keep], fwhm
 
-    # Measuring every source takes the longest of any step here and used to run
-    # in silence. Report about ten times, each on its own line: Spyder's console
-    # does not reliably honour a carriage return, and a rewritten line then
-    # becomes one very long one.
-    n_total = len(sources)
-    step = max(1, n_total // 10)
-    print(f"Measuring {n_total:,} sources in the {band} image...", flush=True)
 
-    n_edge = n_nosignal = n_negative = 0
-    results = []
-    for i, source in enumerate(sources, 1):
-        if i % step == 0 or i == n_total:
-            print(f"   {i:,} of {n_total:,}", flush=True)
-        x, y = source['xcentroid'], source['ycentroid']
-        # Width is measured on the frame with the diffuse light taken out, and
-        # the flux on the frame as it is.
-        #
-        # compute_fwhm asks which pixels sit above half of the brightest one. On
-        # a galaxy that question has no useful answer: inside a box on the disc
-        # the counts run from about 50 to 63, half of the peak is 31, and not one
-        # pixel falls below it - so every source came back as wide as the box,
-        # and its aperture was sized by the box rather than by itself. Taking the
-        # smooth galaxy light out first puts the floor back at zero, and half the
-        # peak becomes a threshold that separates the source from what surrounds
-        # it. A star on empty sky is unaffected: its floor was already zero.
-        fwhm = compute_fwhm(flat, x, y)
-        # fwhm is None       - too close to the edge for a full measuring box
-        # fwhm is zero/NaN   - a detection that turned out to be nothing. On a
-        #                      background-subtracted image the local peak of a
-        #                      noise ripple can be 0.006 counts; half of that is
-        #                      a meaningless threshold, one pixel clears it, and
-        #                      the width between that pixel and itself is zero.
-        #                      Passing it on gives photutils a radius of zero
-        #                      and the run stops.
-        if fwhm is None:
-            n_edge += 1
-            continue
-        if not (np.isfinite(fwhm) and fwhm > 0):
-            n_nosignal += 1
-            continue
+def register_B_onto_V(B_img, V_img, fits_file_B, fits_file_V):
+    """The mapping between B's pixel grid and V's, both ways.
 
-        radius = APERTURE_SCALE * fwhm
+    B and V are separate exposures and nothing guarantees their grids
+    coincide. astroalign finds the registration from the star patterns of
+    these two images; each frame's own plate solution is the fallback.
 
-        # A cheap look before the expensive one. More than half of what the
-        # detector hands over here is noise: on an M33 frame, 20,726 of 39,491
-        # sources ended up with negative flux and were thrown away - after being
-        # measured. Aperture photometry on a single source costs a thousand times
-        # what summing a small patch of the array does, so the hopeless cases are
-        # dropped first.
-        #
-        # The test is deliberately weaker than the real one. It rejects only what
-        # the real test would certainly reject too: a patch whose total sits well
-        # below zero on a frame that already has its background removed. Anything
-        # near the line goes through and is measured properly, so the catalogue
-        # that comes out is the same catalogue.
-        _h = int(max(3, round(radius)))
-        _yi, _xi = int(round(y)), int(round(x))
-        if (_h <= _yi < flat.shape[0] - _h) and (_h <= _xi < flat.shape[1] - _h):
-            _patch = flat[_yi - _h:_yi + _h + 1, _xi - _h:_xi + _h + 1]
-            if _patch.sum() < -3.0 * rms * _patch.size ** 0.5:
-                n_negative += 1
-                continue
-
-        aperture = CircularAperture((x, y), r=radius)
-        annulus_inner_radius = radius * ANNULUS_INNER_SCALE
-        annulus_outer_radius = radius * ANNULUS_OUTER_SCALE
-        annulus = CircularAnnulus((x, y), r_in=annulus_inner_radius, r_out=annulus_outer_radius)
-
-        phot_table = aperture_photometry(data, [aperture, annulus])
-        background_mean = phot_table['aperture_sum_1'][0] / annulus.area
-        background_subtracted_flux = phot_table['aperture_sum_0'][0] - background_mean * aperture.area
-
-        if background_subtracted_flux < 0:
-            n_negative += 1
-            continue
-
-        results.append([x, y, fwhm, radius, background_subtracted_flux,
-                        band, annulus_inner_radius, annulus_outer_radius])
-
-    print(f"   {len(results):,} measured"
-          f"   |   skipped: {n_edge:,} at the frame edge,"
-          f" {n_nosignal:,} with no measurable width,"
-          f" {n_negative:,} with negative flux", flush=True)
-
-    # Back into the coordinates of the whole frame. Everything after this point -
-    # registering B onto V, matching the catalogue through the WCS, the radial
-    # profile - is written in those, and a window that leaked its own coordinates
-    # outwards would shift every position by the size of the crop.
-    if x_offset or y_offset:
-        for row in results:
-            row[0] += x_offset
-            row[1] += y_offset
-
-    return results
-
-def register_B_onto_V(B_img, V_img, xB, yB, fits_file_B, fits_file_V):
-    """Where each B-image position (xB, yB) lands in V's pixel grid.
-
-    B and V are separate exposures, and nothing guarantees their pixel grids
-    coincide - the telescope can move between them by an amount that depends
-    on the mount, the dither, how long the filter change took. Every match
-    tolerance in this file is only correct once that is corrected for.
-
-    astroalign finds the registration directly from the star patterns in
-    these two specific images - it does not assume any telescope, field, or
-    plate scale, and does not depend on how good either WCS solution is.
-    Falls back to each frame's own WCS only if astroalign cannot find enough
-    matching stars, or its fitted scale is not plausible for two frames from
-    the same telescope."""
+    Returns (b_to_v, v_to_b, description); each takes an (N, 2) array.
+    """
     try:
-        transf, (src_list, _tgt_list) = aa.find_transform(B_img, V_img)
+        transf, (src_list, _tgt_list) = aa.find_transform(
+            np.nan_to_num(B_img), np.nan_to_num(V_img))
         if abs(transf.scale - 1.0) > ASTROALIGN_MAX_SCALE_ERROR:
             raise ValueError(f"fitted scale {transf.scale:.3f} is not plausible "
                              f"for two frames from the same telescope")
-        xy = transf(np.column_stack([xB, yB]))
-        print(f"   registered B onto V from {len(src_list)} matched star "
-             f"pairs (astroalign): shift ({transf.translation[0]:+.1f}, "
-             f"{transf.translation[1]:+.1f}) px, rotation "
-             f"{np.degrees(transf.rotation):+.2f} deg, scale {transf.scale:.4f}",
-             flush=True)
-        return xy[:, 0], xy[:, 1]
+        text = (f"from {len(src_list)} matched star pairs (astroalign): shift "
+                f"({transf.translation[0]:+.1f}, {transf.translation[1]:+.1f}) px, "
+                f"rotation {np.degrees(transf.rotation):+.2f} deg, scale "
+                f"{transf.scale:.4f}")
+        print("   registered B onto V " + text, flush=True)
+        inverse = transf.inverse
+        return (lambda xy: transf(np.asarray(xy, float)),
+                lambda xy: inverse(np.asarray(xy, float)), text)
     except Exception as e:
         print(f"   astroalign registration failed ({e}) - "
-             f"falling back to each frame's own WCS", flush=True)
-        wcs_B = WCS(fits.getheader(fits_file_B))
-        wcs_V = WCS(fits.getheader(fits_file_V))
-        ra_B, dec_B = wcs_B.all_pix2world(xB, yB, 0)
-        return wcs_V.all_world2pix(ra_B, dec_B, 0)
+              f"falling back to each frame's own WCS", flush=True)
+        wcs_B = WCS(fits.getheader(fits_file_B)).celestial
+        wcs_V = WCS(fits.getheader(fits_file_V)).celestial
 
-def match_sources(df_B, df_V, tol, xB_reg=None, yB_reg=None):
-    """Match B and V sources by nearest (X,Y) within tolerance.
+        def b_to_v(xy):
+            xy = np.asarray(xy, float)
+            ra, dec = wcs_B.all_pix2world(xy[:, 0], xy[:, 1], 0)
+            return np.column_stack(wcs_V.all_world2pix(ra, dec, 0))
 
-    xB_reg/yB_reg, when given, are each B source's position after
-    register_B_onto_V() - what the matching distance is measured on. df_B's
-    own X/Y are still what gets stored in the output, since aperture
-    photometry on the B image needs B's own pixel coordinates, not V's."""
-    if xB_reg is None:
-        xB_reg = df_B["X"].values
-    if yB_reg is None:
-        yB_reg = df_B["Y"].values
-    matched_rows = []
-    used_V = set()
-    for i, (_, rowB) in enumerate(df_B.iterrows()):
-        xB, yB = xB_reg[i], yB_reg[i]
-        dists = np.sqrt((df_V["X"] - xB)**2 + (df_V["Y"] - yB)**2)
-        min_idx = dists.idxmin()
-        if dists[min_idx] <= tol and min_idx not in used_V:
-            rowV = df_V.loc[min_idx]
-            merged = {
-                "X_B": rowB["X"], "Y_B": rowB["Y"],
-                "FWHM_B": rowB["FWHM"], "Flux_B": rowB["Flux"],
-                "X_V": rowV["X"], "Y_V": rowV["Y"],
-                "FWHM_V": rowV["FWHM"], "Flux_V": rowV["Flux"]
-            }
-            matched_rows.append(merged)
-            used_V.add(min_idx)
-    return pd.DataFrame(matched_rows)
+        def v_to_b(xy):
+            xy = np.asarray(xy, float)
+            ra, dec = wcs_V.all_pix2world(xy[:, 0], xy[:, 1], 0)
+            return np.column_stack(wcs_B.all_world2pix(ra, dec, 0))
+        return b_to_v, v_to_b, "through the two plate solutions"
 
-def extract_reference_stars(fits_file, df_B, df_V, xB_reg=None, yB_reg=None,
-                            mag_limit=15.0,
-                            catalog="II/336/apass9",
-                            fwhm_hint=4.0):
-    """Query Vizier and return reference stars with catalog mags, measured fluxes and positions (B,V).
 
-    fits_file is V's - catalogue positions come out in V's pixel grid. df_V's
-    own X/Y are already in that same grid, but df_B's are not (B is a
-    separate exposure), so xB_reg/yB_reg - B's positions after
-    register_B_onto_V() - are what the catalogue is actually matched against
-    in B. The native df_B X/Y are still what gets stored, for photometry on
-    the B image itself."""
-    if xB_reg is None:
-        xB_reg = df_B["X"].values
-    if yB_reg is None:
-        yB_reg = df_B["Y"].values
-    # How far from the catalogue position a detection may be and still be
-    # accepted as that star. Tied to the seeing, so it stays a fraction of a
-    # star's width rather than a flat number of pixels.
-    flux_tol = max(CATALOG_FLUX_MATCH_MIN, CATALOG_FLUX_MATCH_SCALE * fwhm_hint)
-    print(f"   matching catalogue stars to detections within {flux_tol:.1f} px", flush=True)
-    hdr = fits.getheader(fits_file)
-    wcs = WCS(hdr)
+def aperture_photometry_at(data, raw, xy, r_ap, r_in, r_out, gain, rn):
+    """Flux, its error, the brightest raw pixel, and the local sky, for every
+    position in xy - all through one aperture radius.
 
-    ra_center, dec_center = wcs.wcs.crval
-    naxis1, naxis2 = hdr["NAXIS1"], hdr["NAXIS2"]
-    scale_deg = np.mean(np.abs(wcs.pixel_scale_matrix.diagonal()))
-    fov_ra = naxis1 * scale_deg
-    fov_dec = naxis2 * scale_deg
-
-    # row_limit has to be passed to the constructor, not set on the class
-    # afterwards - see the same fix in Cluster_CMD.py's get_apass_calib_stars
-    # for why: doing it on the class leaves a freshly constructed instance at
-    # astroquery's default of 50 rows, silently.
-    v = Vizier(columns=["RAJ2000","DEJ2000","Bmag","Vmag"],
-               column_filters={"Vmag":"<%.2f" % mag_limit}, row_limit=-1)
-    result = v.query_region(
-        SkyCoord(ra_center, dec_center, unit="deg"),
-        width=f"{fov_ra}d", height=f"{fov_dec}d",
-        catalog=catalog
-    )
-
-    if len(result) == 0:
-        print("No reference stars found in Vizier catalog.")
-        return pd.DataFrame()
-
-    stars = result[0]
-    coords = SkyCoord(stars["RAJ2000"], stars["DEJ2000"], unit="deg")
-    x_pix, y_pix = wcs.world_to_pixel(coords)
-
-    df_ref = pd.DataFrame({
-        "RA": stars["RAJ2000"],
-        "Dec": stars["DEJ2000"],
-        "Bmag": stars["Bmag"],
-        "Vmag": stars["Vmag"],
-        "X_pix": x_pix,
-        "Y_pix": y_pix
-    })
-
-    flux_B, flux_V = [], []
-    XB_meas, YB_meas, XV_meas, YV_meas = [], [], [], []
-    XB_reg_meas, YB_reg_meas = [], []
-
-    for _, row in df_ref.iterrows():
-        dB = np.sqrt((xB_reg - row["X_pix"])**2 + (yB_reg - row["Y_pix"])**2)
-        dV = np.sqrt((df_V["X"] - row["X_pix"])**2 + (df_V["Y"] - row["Y_pix"])**2)
-
-        if dB.min() <= flux_tol:
-            idxB = int(np.argmin(dB))
-            fB = df_B.iloc[idxB]["Flux"]
-            XB, YB = df_B.iloc[idxB]["X"], df_B.iloc[idxB]["Y"]
-            XB_reg, YB_reg = xB_reg[idxB], yB_reg[idxB]
-        else:
-            fB, XB, YB, XB_reg, YB_reg = np.nan, np.nan, np.nan, np.nan, np.nan
-
-        if dV.min() <= flux_tol:
-            idxV = dV.idxmin()
-            fV = df_V.loc[idxV, "Flux"]
-            XV, YV = df_V.loc[idxV, "X"], df_V.loc[idxV, "Y"]
-        else:
-            fV, XV, YV = np.nan, np.nan, np.nan
-
-        flux_B.append(fB)
-        flux_V.append(fV)
-        XB_meas.append(XB)
-        YB_meas.append(YB)
-        XV_meas.append(XV)
-        YV_meas.append(YV)
-        XB_reg_meas.append(XB_reg)
-        YB_reg_meas.append(YB_reg)
-
-    df_ref["Flux_B_measured"] = flux_B
-    df_ref["Flux_V_measured"] = flux_V
-    df_ref["X_B"] = XB_meas
-    df_ref["Y_B"] = YB_meas
-    df_ref["X_V"] = XV_meas
-    df_ref["Y_V"] = YV_meas
-
-    # filter only stars with valid flux in both bands
-    n_found = len(df_ref)
-    df_ref = df_ref.dropna(subset=["Flux_B_measured","Flux_V_measured"])
-    n_bothbands = len(df_ref)
-    XB_reg_meas = np.array(XB_reg_meas)[df_ref.index] if n_bothbands else np.array([])
-    YB_reg_meas = np.array(YB_reg_meas)[df_ref.index] if n_bothbands else np.array([])
-
-    # How far each band's measurement ended up from where the catalogue says the
-    # star is, and from the other band. Kept in the file: when a calibration
-    # goes wrong these two columns say so at a glance.
-    #
-    # Both distances use B's position after registration onto V's grid, not
-    # its native pixel position - X_pix/Y_pix and X_V/Y_V are already in that
-    # grid, and comparing them against B's own, unregistered pixels would
-    # report an offset that is really just the two frames' own difference.
-    df_ref["Offset_B"] = np.hypot(XB_reg_meas - df_ref["X_pix"],
-                                  YB_reg_meas - df_ref["Y_pix"])
-    df_ref["Offset_V"] = np.hypot(df_ref["X_V"] - df_ref["X_pix"],
-                                  df_ref["Y_V"] - df_ref["Y_pix"])
-    df_ref["Separation_B_V"] = np.hypot(XB_reg_meas - df_ref["X_V"],
-                                        YB_reg_meas - df_ref["Y_V"])
-
-    # A star is only usable if both bands measured the same object. When one
-    # band misses the star, the nearest blob is accepted instead and the two
-    # bands drift apart - which is exactly the pairing that ruins a zero point.
-    cross_tol = REF_CROSS_BAND_TOLERANCE * max(fwhm_hint, 1.0)
-    same_object = df_ref["Separation_B_V"] <= cross_tol
-    n_split = int((~same_object).sum())
-    df_ref = df_ref[same_object]
-
-    print(f"   reference stars: {n_found} in the catalogue,"
-          f" {n_bothbands} measured in both bands,"
-          f" {n_split} dropped for landing on different objects in B and V"
-          f" (more than {cross_tol:.1f} px apart),"
-          f" {len(df_ref)} usable", flush=True)
-
-    return df_ref.reset_index(drop=True)
-
-def compute_zero_point(fluxes, mags, label=""):
-    """Zero point from reference stars, combined so that one bad star cannot
-    carry the frame.
-
-    This was a plain mean, and a mean is the wrong tool. A reference star whose
-    flux was measured on the wrong object pairs a real catalogue magnitude with
-    a meaningless flux; the pair can be several magnitudes out, and a single one
-    moves the mean enough to shift every magnitude in the output. Taking the
-    median first and then clipping about it makes the bad stars visible and
-    harmless: they are reported, not averaged in.
+    The sky is the sigma-clipped median of a ring around the source, so the
+    smooth light of the galaxy under a knot is taken off with it. The error
+    counts the photons of the source, the sky noise measured in the ring (once
+    per aperture pixel, and once more through the uncertainty of the sky level
+    itself), with the header's read noise as a floor.
     """
-    fluxes = np.asarray(fluxes, dtype=float)
-    mags = np.asarray(mags, dtype=float)
-    mask = np.isfinite(fluxes) & np.isfinite(mags) & (fluxes > 0)
-    if not mask.any():
-        return np.nan, 0, 0
+    xy = np.asarray(xy, float)
+    ap = CircularAperture(xy, r=r_ap)
+    ann = CircularAnnulus(xy, r_in=r_in, r_out=r_out)
+    sky = ApertureStats(data, ann, sigma_clip=SigmaClip(sigma=3.0, maxiters=5))
+    sky_med = np.atleast_1d(np.asarray(sky.median, float))
+    sky_std = np.atleast_1d(np.asarray(sky.std, float))
+    n_sky = np.atleast_1d(np.asarray(sky.sum_aper_area.value, float))
+    total = np.asarray(aperture_photometry(data, ap)["aperture_sum"], float)
+    n_ap = float(ap.area)
+    flux = total - sky_med * n_ap
+    pix_var = np.maximum(sky_std ** 2, (rn / gain) ** 2)
+    var = (np.clip(flux, 0, None) / gain
+           + n_ap * pix_var * (1.0 + n_ap / np.maximum(n_sky, 1)))
+    peak = np.atleast_1d(np.asarray(
+        ApertureStats(raw, CircularAperture(xy, r=max(1.5, 0.5 * r_ap))).max, float))
+    return flux, np.sqrt(var), peak, sky_med
 
-    zp = mags[mask] + 2.5 * np.log10(fluxes[mask])
-    keep = np.ones(len(zp), dtype=bool)
-    if len(zp) >= 4:
-        spread = np.median(np.abs(zp - np.median(zp))) * 1.4826  # robust sigma
-        if spread > 0:
-            keep = np.abs(zp - np.median(zp)) <= REF_ZP_OUTLIER_SIGMA * spread
-    value = float(np.median(zp[keep])) if keep.any() else float(np.median(zp))
-    n_used, n_cut = int(keep.sum()), int((~keep).sum())
-    if label:
-        print(f"   zero point {label} = {value:.3f}"
-              f"   from {n_used} stars, {n_cut} rejected as outliers"
-              f"   (scatter {np.std(zp[keep]):.3f} mag)", flush=True)
-    return value, n_used, n_cut
 
-def make_cmd(df, base_file, label):
-    if "Mag_B" in df.columns and "Mag_V" in df.columns:
-        # Compute color index
-        df = df.copy()
-        df["B-V"] = df["Mag_B"] - df["Mag_V"]
+def instrumental(flux, err):
+    with np.errstate(divide="ignore", invalid="ignore"):
+        mag = np.where(flux > 0, -2.5 * np.log10(flux), np.nan)
+        mag_err = np.where(flux > 0, 1.0857 * err / flux, np.nan)
+    return mag, mag_err
 
-        # Reorder columns: place B-V immediately before Mag_V
-        cols = list(df.columns)
-        if "B-V" in cols and "Mag_V" in cols:
-            cols.remove("B-V")
-            cols.remove("Mag_V")
-            # put everything else first, then B-V, then Mag_V
-            cols = cols + ["B-V", "Mag_V"]
-            df = df[cols]
 
-        # Save new file with color index
-        # base_file already carries whichever stage this is - "_no_stars",
-        # "_no_stars_color_filtered" - so the stage is not appended again.
-        # It used to be, which produced names like
-        # ..._no_stars_color_filtered_with_color_no_stars_color_filtered.csv
-        out_file_color = base_file.replace(".csv", "_with_color.csv")
-        df.to_csv(out_file_color, index=False)
-        print(f"File with color index saved to {out_file_color}")
+# ------------------- The plate solution, checked against Gaia -------------------
 
-        # Create CMD plot
-        plt.figure(figsize=(8, 10))
-        plt.scatter(df["B-V"], df["Mag_V"],
-                    s=30, edgecolor="black", facecolor="cyan", alpha=0.7)
+def field_centre_and_radius(wcs, shape):
+    ny, nx = shape
+    centre = wcs.pixel_to_world(nx / 2, ny / 2)
+    corners = wcs.pixel_to_world(np.array([0, nx, 0, nx]), np.array([0, 0, ny, ny]))
+    return centre, float(np.max(centre.separation(corners).deg))
 
-        plt.gca().invert_yaxis()  # brighter objects at the top
-        plt.xlabel("B - V (Color Index)")
-        plt.ylabel("V magnitude")
-        plt.title(f"CMD of {obj_name} {label} (B-V, V)")
 
-        # >>> Control of x-axis (color index) range <<<
-        plt.xlim(CMD_COLOR_MIN, CMD_COLOR_MAX)
+def verify_plate_solution(xy_bright, all_xy, wcs, shape):
+    """The plate solution of the V frame, checked against Gaia and repaired if
+    it does not fit.
 
-        out_cmd = base_file.replace(".csv", "_CMD.png")
-        plt.savefig(out_cmd, dpi=150)
-        plt.close()
-        print(f"CMD diagram saved to {out_cmd}")
-    else:
-        print(f"Mag_B or Mag_V not found in {label} catalog. CMD not created.")
+    Everything that uses the sky goes through it: the calibration stars, the
+    foreground stars, the galaxy's centre. Software that combines or crops
+    frames sometimes keeps a solution that belongs to another frame - in the
+    Cluster_CMD tests a split-channel file carried one 45 px off, and only 4 of
+    2,000 catalogue stars matched.
 
-R_V = 3.1                        # A_V / E(B-V) for dust in our own galaxy
-
-DISTANCE_CATALOG = "J/AJ/152/50"  # Cosmicflows-3, Tully et al. 2016
-
-def lookup_distance(name):
-    """Redshift-independent distance in Mpc from Cosmicflows-3, or None.
-
-    Redshift is no use for a galaxy this close - M101's recession velocity puts
-    it at about 3 Mpc, roughly half its real distance - so a catalogue of direct
-    measurements is what is wanted.
+    The 100 brightest unsaturated sources are put through the solution and
+    looked up in Gaia DR3. If at least half have a Gaia star within
+    CALIB_MATCH_RADIUS the solution is kept. Otherwise the offset between the
+    Gaia stars and the sources is found (or the star patterns matched, with
+    the mirror image tried too) and a new solution fitted.
     """
+    from astropy.wcs.utils import fit_wcs_from_points
+    ny, nx = shape
+    centre, radius = field_centre_and_radius(wcs, shape)
     try:
-        coord = SkyCoord.from_name(name)
-        hit = Vizier(columns=["**"], row_limit=5).query_region(
-            coord, radius=2 * u.arcmin, catalog=DISTANCE_CATALOG)
-        if not hit:
-            return None
-        table = hit[0]
-        for col in ("Dist", "<Dist>"):
-            if col in table.colnames:
-                value = float(table[col][0])
-                if np.isfinite(value) and value > 0:
-                    print(f"[lookup] {name}: {value:.2f} Mpc"
-                          f" (Cosmicflows-3)", flush=True)
-                    return value
+        res = Vizier(columns=["RA_ICRS", "DE_ICRS", "Gmag"],
+                     column_filters={"Gmag": "<17"}, row_limit=-1).query_region(
+            SkyCoord(centre.ra, centre.dec), radius=1.3 * radius * u.deg,
+            catalog="I/355/gaiadr3")
+        gaia = res[0]
     except Exception as exc:
-        print(f"[lookup] distance unavailable ({exc})", flush=True)
-    return None
+        print(f"[wcs] Gaia unavailable ({exc}) - the plate solution is not checked")
+        return wcs, "not checked (Gaia unavailable)"
+    gaia.sort("Gmag")
+    gsky = SkyCoord(np.asarray(gaia["RA_ICRS"], float) * u.deg,
+                    np.asarray(gaia["DE_ICRS"], float) * u.deg)
 
-def lookup_center_pixel(name, header):
-    """Where the galaxy actually sits in this frame, in pixels, or None.
+    def fraction(w, n=100):
+        ra, dec = w.all_pix2world(xy_bright[:n, 0], xy_bright[:n, 1], 0)
+        _i, sep, _ = SkyCoord(ra * u.deg, dec * u.deg).match_to_catalog_sky(gsky)
+        ok = sep.arcsec < CALIB_MATCH_RADIUS
+        return ok.mean(), (np.median(sep.arcsec[ok]) if ok.any() else np.nan)
 
-    The radial profile used to assume the galaxy sits exactly at the frame's
-    own geometric centre - true only if the telescope was pointed dead-on. On
-    a real pair of M101 frames the pointing was off by 72 px, about 1.8 kpc at
-    that distance: not huge next to the whole profile, but enough to bias the
-    inner rings, where 72 px is a large fraction of the radius, and to shift
-    the whole radius scale. The galaxy's own catalogued position, converted
-    through this frame's WCS, does not depend on how well the pointing landed.
-    """
-    try:
-        coord = SkyCoord.from_name(name)
-        w = WCS(header)
-        x, y = w.world_to_pixel(coord)
-        x, y = float(x), float(y)
-        nx, ny = header["NAXIS1"], header["NAXIS2"]
-        if 0 <= x < nx and 0 <= y < ny:
-            print(f"[lookup] {name}: centred at pixel ({x:.0f}, {y:.0f})", flush=True)
-            return x, y
-        print(f"[lookup] {name}'s catalogued position falls outside this frame "
-             f"- using the frame's own centre for the radial profile instead", flush=True)
-    except Exception as exc:
-        print(f"[lookup] galaxy centre unavailable ({exc}) - using the frame's "
-             f"own centre for the radial profile instead", flush=True)
-    return None, None
+    f0, s0 = fraction(wcs)
+    print(f"[wcs] {100 * f0:.0f}% of the 100 brightest sources have a Gaia star "
+          f"within {CALIB_MATCH_RADIUS:g} arcsec (median {s0:.2f} arcsec)", flush=True)
+    if f0 >= WCS_CHECK_MIN_FRACTION:
+        return wcs, f"checked against Gaia: {100 * f0:.0f}% of bright sources match"
 
-def lookup_extinction(name):
-    """Galactic reddening E(B-V) towards the galaxy, or None.
-
-    Schlafly & Finkbeiner (2011) recalibration of the Schlegel dust maps, served
-    by IRSA. A_V follows as R_V x E(B-V); the two are not free to be set apart
-    from each other, which is why only one of them is asked for.
-    """
-    try:
-        from astroquery.ipac.irsa.irsa_dust import IrsaDust
-        table = IrsaDust.get_query_table(name, section="ebv")
-        value = float(table["ext SandF mean"][0])
-        if np.isfinite(value) and value >= 0:
-            print(f"[lookup] {name}: E(B-V) = {value:.4f},"
-                  f" so A_V = {R_V * value:.3f} (Schlafly & Finkbeiner 2011)",
-                  flush=True)
-            return value
-    except Exception as exc:
-        print(f"[lookup] extinction unavailable ({exc})", flush=True)
-    return None
-
-print("=== Photometry Input ===")
-
-_folder = _norm_path(_ask(
-    "Path to the folder holding the frames (Enter to name the two files instead)",
-    "", str))
-
-fits_file_B = fits_file_V = None
-
-obj_name = None
-
-_combined_note = []
-
-_datadir_given = None
-
-if _folder and os.path.isdir(_folder):
-    pass  # from HII_From_Images, inlined above
-
-    _chosen, _donors, _groups, _found = frames_from_folder(_folder, ("B", "V"))
-    fits_file_B, fits_file_V = _chosen["B"], _chosen["V"]
-    obj_name = _found
-
-    # Where the folder holds several exposures of a filter and nothing combined,
-    # combine them here rather than picking one and discarding the rest. Same
-    # median, same anchor registration, as the other tools.
-    _datadir_given = _folder
-    if _groups:
-        _outdir = os.path.join(_folder, "result_CMD")
-        os.makedirs(_outdir, exist_ok=True)
-        for _role, _target in (("B", "B"), ("V", "V")):
-            _paths = _groups.get(_role)
-            if not _paths:
+    print("[wcs] the plate solution in the header does not fit this image - "
+          "repairing it from the star pattern", flush=True)
+    gx, gy = wcs.all_world2pix(gsky.ra.deg, gsky.dec.deg, 0)
+    near = (gx > -0.05 * nx) & (gx < 1.05 * nx) & (gy > -0.05 * ny) & (gy < 1.05 * ny)
+    src_all = np.column_stack([gx, gy])
+    det_tree = cKDTree(xy_bright[:600])
+    max_off = 0.25 * max(nx, ny)
+    best = None
+    for parity in (1, -1):
+        src = src_all.copy()
+        if parity < 0:
+            src[:, 0] = (nx - 1) - src[:, 0]
+        cand = src[near][:600]
+        dxy = []
+        for k, nb in enumerate(det_tree.query_ball_point(cand, r=max_off)):
+            if nb:
+                dxy.append(xy_bright[:600][nb] - cand[k])
+        if dxy:
+            dxy = np.vstack(dxy)
+            bins = np.arange(-max_off, max_off + 4, 4.0)
+            H, ex, ey = np.histogram2d(dxy[:, 0], dxy[:, 1], bins=[bins, bins])
+            i, j = np.unravel_index(np.argmax(H), H.shape)
+            peak = H[i, j]
+            if peak >= 10 and peak > 8 * max(np.median(H[H > 0]), 1):
+                shift = np.array([0.5 * (ex[i] + ex[i + 1]), 0.5 * (ey[j] + ey[j + 1])])
+                T = lambda p, s_=shift: p + s_
+                if best is None or peak > best[2]:
+                    best = (parity, T, int(peak))
                 continue
-            _data, _wcs, _bpm, _info = combine_exposures(
-                _paths, _donors.get(_role), _role)
-            _out = os.path.join(
-                _outdir, "{}_{}_combined.fits".format(
-                    (obj_name or "galaxy").replace(" ", "_"), _role))
-            save_frame(_out, _data, _wcs, _info,
-                       history=("Median of {} exposures".format(len(_paths)),
-                                "Combined by Blue_Clusters_From_Images.py"))
-            _combined_note.append("{}: median of {} exposures".format(
-                _role, len(_paths)))
-            if _role == "B":
-                fits_file_B = _out
-            else:
-                fits_file_V = _out
-        del _data
-elif _folder:
-    print("[input] there is no folder at " + _folder
-          + " - naming the two files instead", flush=True)
+        for n_cat, n_det in ((150, 150), (200, 200), (300, 300)):
+            try:
+                T, (s, _t) = aa.find_transform(cand[:n_cat], xy_bright[:n_det])
+            except Exception:
+                continue
+            if abs(T.scale - 1.0) > 0.1:
+                continue
+            if best is None or len(s) > best[2]:
+                best = (parity, T, len(s))
+            break
+    if best is None:
+        stop("PLATE SOLUTION: the header's solution does not fit the V image and "
+             "could not be repaired. Plate-solve the V frame again (for example "
+             "with astrometry.net) and rerun.")
+    parity, T, nctl = best
+    src = src_all.copy()
+    if parity < 0:
+        src[:, 0] = (nx - 1) - src[:, 0]
+    guess = T(src)
+    tree = cKDTree(all_xy)
+    new = wcs
+    tol = 5.0
+    ok = np.zeros(len(guess), bool)
+    for _ in range(3):
+        d, j = tree.query(guess, distance_upper_bound=tol)
+        ok = np.isfinite(d)
+        if ok.sum() < 10:
+            break
+        px = all_xy[j[ok]]
+        new = fit_wcs_from_points((px[:, 0], px[:, 1]), gsky[ok],
+                                  proj_point="center", projection="TAN")
+        gx2, gy2 = new.all_world2pix(gsky.ra.deg, gsky.dec.deg, 0)
+        guess = np.column_stack([gx2, gy2])
+        tol = XY_MATCH_TOLERANCE
+    f1, s1 = fraction(new)
+    shift = np.hypot(*(np.array(new.all_world2pix(centre.ra.deg, centre.dec.deg, 0))
+                       - np.array([nx / 2, ny / 2])))
+    print(f"[wcs] repaired ({'mirrored, ' if parity < 0 else ''}{nctl} pattern "
+          f"stars, {int(ok.sum())} in the fit): the field centre moved {shift:.0f} px; "
+          f"now {100 * f1:.0f}% of bright sources match Gaia (median {s1:.2f} arcsec)",
+          flush=True)
+    if f1 < WCS_CHECK_MIN_FRACTION:
+        stop("PLATE SOLUTION: the repaired solution still does not fit. "
+             "Plate-solve the V frame again and rerun.")
+    return new, (f"REPAIRED from Gaia: header solution matched {100 * f0:.0f}% of "
+                 f"bright sources, repaired {100 * f1:.0f}%, centre moved {shift:.0f} px")
 
-if obj_name is None:
-    obj_name = _ask("Galaxy name", "M101", str)
 
-print("Looking the galaxy up...", flush=True)
+# ------------------- Calibration -------------------
 
-_dist_default = lookup_distance(obj_name)
+def query_calibration_catalogue(which, centre, radius_deg):
+    """Reference stars with Johnson B and V: RA, DEC, Mag_B, Mag_V, e_B, e_V.
 
-_ebv_default = lookup_extinction(obj_name)
+    APASS DR9 (II/336/apass9) is the default. Gaia DR3 synthetic photometry
+    (I/360/syntphot) is computed from Gaia's own low-resolution spectra and
+    standardised to the Johnson-Kron-Cousins system: deeper, uniform across
+    the sky, and resolved down to about an arcsecond. Only entries Gaia flags
+    as good are used.
 
-if _dist_default is None:
-    print("[lookup] no published distance found - please supply one", flush=True)
-    distance = _ask("Distance (Mpc)", 10.0, float)
-else:
-    distance = float(_dist_default)
-
-if _ebv_default is None:
-    print("[lookup] no reddening found - please supply one", flush=True)
-    E_BV = _ask("Galactic color excess E(B-V)", 0.0, float)
-else:
-    E_BV = float(_ebv_default)
-
-A_V = R_V * E_BV
-
-print(f"Using distance {distance:.2f} Mpc,"
-      f" E(B-V) = {E_BV:.4f}, A_V = {A_V:.3f}", flush=True)
-
-if fits_file_B is None:
-    fits_file_B = _norm_path(_ask("Path to B-band FITS", r"D:\example_B.fts", str))
-
-if fits_file_V is None:
-    fits_file_V = _norm_path(_ask("Path to V-band FITS", r"D:\example_V.fts", str))
-
-for _line in _combined_note:
-    print("[input] " + _line, flush=True)
-
-_datadir = (_datadir_given or os.path.dirname(fits_file_B) or os.getcwd())
-
-_outdir = os.path.join(_datadir, "result_CMD")
-
-os.makedirs(_outdir, exist_ok=True)
-
-print(f"[out] writing everything to {_outdir}")
-
-fits_file_B = subtract_background_and_save(fits_file_B)
-
-fits_file_V = subtract_background_and_save(fits_file_V)
-
-_window = None
-
-try:
-    pass  # from galaxy_window, inlined above
-    pass  # from galaxy_catalogue, inlined above
-
-    _hdr_probe = fits.getheader(fits_file_V)
-    _shape_probe = (_hdr_probe["NAXIS2"], _hdr_probe["NAXIS1"])
-    _cx, _cy = lookup_center_pixel(obj_name, _hdr_probe)
-    _geom = hyperleda_geometry(obj_name)
-    _scale = _hdr_probe.get("PIXSCALE")
-    if _scale is None:
-        _wprobe = WCS(_hdr_probe)
-        _scale = 3600.0 * float(np.mean(np.abs(_wprobe.pixel_scale_matrix.diagonal())))
-    if _geom and _geom.get("d25_arcmin") and _scale:
-        _r25 = 0.5 * _geom["d25_arcmin"] * 60.0 / float(_scale)
-        _window = galaxy_window(_shape_probe, (_cx, _cy), _r25, margin=1.5)
-        if _window is None:
-            print("[window] the galaxy fills this frame - working on all of it",
-                  flush=True)
-        else:
-            _y0, _y1, _x0, _x1 = _window
-            print(f"[window] the galaxy occupies {_x1 - _x0} x {_y1 - _y0} of "
-                  f"{_shape_probe[1]} x {_shape_probe[0]} pixels; the rest is sky",
-                  flush=True)
+    row_limit has to be passed to the constructor: set on the class afterwards
+    it left astroquery's default of 50 rows, silently.
+    """
+    coord = SkyCoord(centre.ra, centre.dec)
+    empty = pd.DataFrame(columns=["RA", "DEC", "Mag_B", "Mag_V", "e_B", "e_V"])
+    if which == "APASS":
+        cols = ["RAJ2000", "DEJ2000", "Bmag", "Vmag", "e_Bmag", "e_Vmag"]
+        res = Vizier(columns=cols, row_limit=-1).query_region(
+            coord, radius=radius_deg * u.deg, catalog="II/336/apass9")
+        if len(res) == 0:
+            return empty
+        t = res[0].to_pandas()
+        out = pd.DataFrame({"RA": t["RAJ2000"], "DEC": t["DEJ2000"],
+                            "Mag_B": t["Bmag"], "Mag_V": t["Vmag"],
+                            "e_B": t["e_Bmag"], "e_V": t["e_Vmag"]})
     else:
-        print("[window] no isophotal radius available - working on the whole frame",
-              flush=True)
-except Exception as _exc:
-    print(f"[window] could not work out where the galaxy ends ({_exc}) - working "
-          f"on the whole frame", flush=True)
-
-results_B = process_fits(fits_file_B, "B", window=_window)
-
-results_V = process_fits(fits_file_V, "V", window=_window)
-
-df_B = pd.DataFrame(results_B, columns=[
-    "X", "Y", "FWHM", "Aperture Radius", "Flux",
-    "Band", "Annulus Inner Radius", "Annulus Outer Radius"
-])
-
-df_V = pd.DataFrame(results_V, columns=[
-    "X", "Y", "FWHM", "Aperture Radius", "Flux",
-    "Band", "Annulus Inner Radius", "Annulus Outer Radius"
-])
-
-_fwhm_hint = max(SEEING_MEASURED.get("B", SEEING_FALLBACK),
-                 SEEING_MEASURED.get("V", SEEING_FALLBACK))
-
-print("Registering B onto V...", flush=True)
-
-_B_img = fits.getdata(fits_file_B, ext=0).astype(float)
-
-_V_img = fits.getdata(fits_file_V, ext=0).astype(float)
-
-_xB_reg, _yB_reg = register_B_onto_V(_B_img, _V_img, df_B["X"].values, df_B["Y"].values,
-                                     fits_file_B, fits_file_V)
-
-_match_tol = max(MATCH_TOLERANCE_MIN, MATCH_SCALE * _fwhm_hint)
-
-print(f"Matching B to V within {_match_tol:.1f} px"
-      f" (stars are {_fwhm_hint:.1f} px wide)", flush=True)
-
-df_matched = match_sources(df_B, df_V, tol=_match_tol, xB_reg=_xB_reg, yB_reg=_yB_reg)
-
-print(f"   {len(df_matched):,} sources measured in both bands", flush=True)
-
-csv_filename = os.path.join(_outdir, f"{obj_name}_photometry_results.csv")
-
-df_matched.to_csv(csv_filename, index=False)
-
-print(f"Data saved to {csv_filename}")
-
-df_ref = extract_reference_stars(fits_file_V, df_B, df_V, xB_reg=_xB_reg, yB_reg=_yB_reg,
-                                 mag_limit=REF_MAG_LIMIT,
-                                 catalog=REF_CATALOG,
-                                 fwhm_hint=_fwhm_hint)
-
-if not df_ref.empty:
-    csv_ref = os.path.join(_outdir, f"{obj_name}_reference_stars.csv")
-    df_ref.to_csv(csv_ref, index=False)
-    print(f"Reference stars saved to {csv_ref}")
-
-    # ----- Calibration using N reference stars -----
-    print(f"{len(df_ref)} reference stars available.")
-    N = _ask("How many to calibrate against", len(df_ref), int)
-    N = max(1, min(int(N), len(df_ref)))
-    df_calib = df_ref.head(N)
-
-    # compute zero points
-    zp_B, n_zp_B, n_cut_B = compute_zero_point(
-        df_calib["Flux_B_measured"].values, df_calib["Bmag"].values, label="B")
-    zp_V, n_zp_V, n_cut_V = compute_zero_point(
-        df_calib["Flux_V_measured"].values, df_calib["Vmag"].values, label="V")
-
-    # add aperture radii
-    df_matched["Aperture_Radius_B"] = df_matched["FWHM_B"] * APERTURE_SCALE
-    df_matched["Aperture_Radius_V"] = df_matched["FWHM_V"] * APERTURE_SCALE
-
-    # Calibrated magnitudes, then the foreground dust of our own galaxy taken
-    # out. A_V dims the V band; B is dimmed by A_V + E(B-V), which is what the
-    # colour excess means. Subtracting both leaves the colour reddened by
-    # exactly E(B-V), so that is what comes off B-V.
-    df_matched["Mag_B"] = zp_B - 2.5 * np.log10(df_matched["Flux_B"]) - (A_V + E_BV)
-    df_matched["Mag_V"] = zp_V - 2.5 * np.log10(df_matched["Flux_V"]) - A_V
-
-    # What this run assumed, carried in the data itself. Without these columns
-    # there is no way to tell afterwards which distance or extinction produced
-    # a given set of numbers.
-    df_matched["ZP_B_used"] = zp_B
-    df_matched["ZP_V_used"] = zp_V
-    df_matched["N_ref_used"] = n_zp_B + n_zp_V
-    df_matched["A_V_used"] = A_V
-    df_matched["E_BV_used"] = E_BV
-    df_matched["Distance_Mpc_used"] = distance
-    df_matched["FWHM_measured_B"] = SEEING_MEASURED.get("B", np.nan)
-    df_matched["FWHM_measured_V"] = SEEING_MEASURED.get("V", np.nan)
-
-    # save calibrated photometry
-    csv_calib = os.path.join(_outdir, f"{obj_name}_calibrated_photometry.csv")
-    df_matched.to_csv(csv_calib, index=False)
-    print(f"Calibrated photometry saved to {csv_calib}")
-
-data_V, hdr_V = fits.getdata(fits_file_V, header=True)
-
-plt.figure(figsize=(10, 10))
-
-plt.imshow(data_V, cmap="gray", origin="lower", vmin=np.percentile(data_V, 5), vmax=np.percentile(data_V, 99))
-
-plt.colorbar(label="Counts")
-
-plt.scatter(df_V["X"], df_V["Y"], s=40, edgecolor="green", facecolor="none", label="Measured sources")
-
-plt.title(f"{obj_name} - V band with detected sources")
-
-plt.xlabel("X [pixels]")
-
-plt.ylabel("Y [pixels]")
-
-plt.legend()
-
-out_png = os.path.join(_outdir, f"{obj_name}_V_sources.png")
-
-plt.savefig(out_png, dpi=150)
-
-plt.close()
-
-print(f"V-band source map saved to {out_png}")
-
-data_B_disp = fits.getdata(fits_file_B)
-
-plt.figure(figsize=(10, 10))
-
-plt.imshow(data_B_disp, cmap="gray", origin="lower",
-           vmin=np.percentile(data_B_disp, 5), vmax=np.percentile(data_B_disp, 99))
-
-plt.colorbar(label="Counts")
-
-plt.scatter(df_B["X"], df_B["Y"], s=40, edgecolor="blue", facecolor="none",
-            label="Measured sources")
-
-plt.title(f"{obj_name} - B band with detected sources")
-
-plt.xlabel("X [pixels]")
-
-plt.ylabel("Y [pixels]")
-
-plt.legend()
-
-out_png_B = os.path.join(_outdir, f"{obj_name}_B_sources.png")
-
-plt.savefig(out_png_B, dpi=150)
-
-plt.close()
-
-print(f"B-band source map saved to {out_png_B}")
-
-calib_file = csv_calib
-
-ref_file   = csv_ref
-
-df_calib = pd.read_csv(calib_file)
-
-df_ref   = pd.read_csv(ref_file)
-
-for col in ["X_B","Y_B","X_V","Y_V"]:
-    if col in df_ref.columns:
-        df_ref[col] = pd.to_numeric(df_ref[col], errors="coerce")
-
-mask_remove = []
-
-for i, row in df_calib.iterrows():
-    xb, yb = row.get("X_B", np.nan), row.get("Y_B", np.nan)
-    xv, yv = row.get("X_V", np.nan), row.get("Y_V", np.nan)
-
-    # check distance to all reference stars
-    dB = np.sqrt((df_ref["X_B"] - xb)**2 + (df_ref["Y_B"] - yb)**2)
-    dV = np.sqrt((df_ref["X_V"] - xv)**2 + (df_ref["Y_V"] - yv)**2)
-
-    if (dB.min() <= REMOVE_TOL) or (dV.min() <= REMOVE_TOL):
-        mask_remove.append(True)
-    else:
-        mask_remove.append(False)
-
-df_clean = df_calib.loc[~pd.Series(mask_remove)].reset_index(drop=True)
-
-_gaia_removed = 0
-
-try:
-    pass  # from galaxy_catalogue, inlined above
-
-    _wV = WCS(hdr_V)
-    _fg, _fgdiag = gaia_foreground_stars(_wV, (hdr_V["NAXIS2"], hdr_V["NAXIS1"]))
-    if _fg is not None and len(_fg):
-        _fx = np.asarray(_fg[:, 0], dtype=float)
-        _fy = np.asarray(_fg[:, 1], dtype=float)
-        _keep = []
-        for _, _row in df_clean.iterrows():
-            _d = np.hypot(_fx - float(_row["X_V"]), _fy - float(_row["Y_V"]))
-            _keep.append(bool(_d.min() > FOREGROUND_TOL))
-        _gaia_removed = int(len(df_clean) - sum(_keep))
-        df_clean = df_clean.loc[pd.Series(_keep).values].reset_index(drop=True)
-        print(f"    {_gaia_removed} sources sit on a Gaia foreground star "
-              f"(parallax or proper motion significant) and are dropped; "
-              f"{len(df_clean)} left", flush=True)
-except Exception as _exc:
-    print(f"    could not check against Gaia ({_exc}); foreground stars other than "
-          f"the calibration references remain in the catalogue", flush=True)
-
-try:
-    if _r25 and _cx is not None and _cy is not None:
-        _d = np.hypot(df_clean["X_V"].astype(float) - float(_cx),
-                      df_clean["Y_V"].astype(float) - float(_cy))
-        _outside = int((_d > _r25).sum())
-        df_clean = df_clean.loc[(_d <= _r25).values].reset_index(drop=True)
-        print(f"    {_outside} sources lie beyond R25 ({_r25:.0f} px), outside the "
-              f"galaxy, and are dropped; {len(df_clean)} left", flush=True)
-except (NameError, TypeError, ValueError) as _exc:
-    print(f"    no galaxy radius available ({_exc}); the catalogue is not trimmed "
-          f"to the galaxy", flush=True)
-
-out_file = calib_file.replace("_calibrated_photometry.csv",
-                              "_calibrated_photometry_no_stars.csv")
-
-df_clean.to_csv(out_file, index=False)
-
-print(f"Cleaned file saved to {out_file}")
-
-plt.figure(figsize=(10, 10))
-
-plt.imshow(data_V, cmap="gray", origin="lower",
-           vmin=np.percentile(data_V, 5), vmax=np.percentile(data_V, 99))
-
-plt.colorbar(label="Counts")
-
-plt.scatter(df_clean["X_V"], df_clean["Y_V"],
-            s=40, edgecolor="green", facecolor="none", label="Cleaned sources (no stars)")
-
-plt.title(f"{obj_name} - V band with detected sources (no stars)")
-
-plt.xlabel("X [pixels]")
-
-plt.ylabel("Y [pixels]")
-
-plt.legend()
-
-out_png_clean = os.path.join(_outdir, f"{obj_name}_V_sources_no_stars.png")
-
-plt.savefig(out_png_clean, dpi=150)
-
-plt.close()
-
-print(f"V-band cleaned source map saved to {out_png_clean}")
-
-make_cmd(df_calib, calib_file, "(all sources)")
-
-make_cmd(df_clean, out_file, "(no stars)")
-
-if "Mag_B" in df_clean.columns and "Mag_V" in df_clean.columns:
-    df_clean_color = df_clean.copy()
-    df_clean_color["B-V"] = df_clean_color["Mag_B"] - df_clean_color["Mag_V"]
-
-    # filter by CMD_COLOR_MIN / CMD_COLOR_MAX
-    mask_color = (df_clean_color["B-V"] >= CMD_COLOR_MIN) & (df_clean_color["B-V"] <= CMD_COLOR_MAX)
-    df_color_filtered = df_clean_color[mask_color].reset_index(drop=True)
-
-    # --- save filtered catalog as CSV ---
-    out_csv_color = os.path.join(_outdir, f"{obj_name}_calibrated_photometry_no_stars_color_filtered.csv")
-    df_color_filtered.to_csv(out_csv_color, index=False)
-    print(f"Color-filtered photometry saved to {out_csv_color}")
-
-    # --- create and save galaxy image with color-filtered sources ---
+        cols = ["Source", "RA_ICRS", "DE_ICRS", "Bmag", "Vmag", "FB", "e_FB",
+                "FV", "e_FV", "BFlag", "VFlag"]
+        res = Vizier(columns=cols, row_limit=-1).query_region(
+            coord, radius=radius_deg * u.deg, catalog="I/360/syntphot")
+        if len(res) == 0:
+            return empty
+        t = res[0].to_pandas()
+        t = t[(t["BFlag"] == 1) & (t["VFlag"] == 1)]
+        out = pd.DataFrame({"RA": t["RA_ICRS"], "DEC": t["DE_ICRS"],
+                            "Mag_B": t["Bmag"], "Mag_V": t["Vmag"],
+                            "e_B": 1.0857 * t["e_FB"] / t["FB"],
+                            "e_V": 1.0857 * t["e_FV"] / t["FV"]})
+    return out.reset_index(drop=True)
+
+
+def match_catalogue(df, wcs, cat, shape):
+    """Each catalogue star matched to the closest source, once.
+
+    A match must be within XY_MATCH_TOLERANCE on the V grid and
+    CALIB_MATCH_RADIUS on the sky. Each source is used for at most one
+    catalogue star (the closest) - a bright star found several times over
+    used to be counted once per detection, and one star then outweighed the
+    rest of the calibration.
+    """
+    cat = cat[np.isfinite(cat["Mag_B"]) & np.isfinite(cat["Mag_V"])].reset_index(drop=True)
+    if not len(cat) or not len(df):
+        return pd.DataFrame()
+    cx, cy = wcs.all_world2pix(cat["RA"].values, cat["DEC"].values, 0)
+    ny, nx = shape
+    inside = (cx > 0) & (cx < nx) & (cy > 0) & (cy < ny)
+    cat = cat[inside].reset_index(drop=True)
+    cx, cy = cx[inside], cy[inside]
+    if not len(cat):
+        return pd.DataFrame()
+    dist, idx = cKDTree(df[["X_V", "Y_V"]].values).query(
+        np.column_stack([cx, cy]), distance_upper_bound=XY_MATCH_TOLERANCE)
+    best = {}
+    for i in range(len(cat)):
+        if not np.isfinite(dist[i]):
+            continue
+        j = int(idx[i])
+        if j not in best or dist[i] < best[j][1]:
+            best[j] = (i, dist[i])
+    rows = []
+    for j, (i, d) in best.items():
+        src = df.iloc[j]
+        sep = SkyCoord(src["RA"] * u.deg, src["DEC"] * u.deg).separation(
+            SkyCoord(cat.loc[i, "RA"] * u.deg, cat.loc[i, "DEC"] * u.deg)).arcsec
+        if sep > CALIB_MATCH_RADIUS:
+            continue
+        r = src.to_dict()
+        r.update({"row": j, "Cat_RA": cat.loc[i, "RA"], "Cat_DEC": cat.loc[i, "DEC"],
+                  "Cat_B": cat.loc[i, "Mag_B"], "Cat_V": cat.loc[i, "Mag_V"],
+                  "Cat_e_B": cat.loc[i, "e_B"], "Cat_e_V": cat.loc[i, "e_V"],
+                  "Sep_arcsec": sep, "Sep_px": d})
+        rows.append(r)
+    return pd.DataFrame(rows)
+
+
+def clipped_line(x, y, nsig=CALIB_CLIP_SIGMA, maxiter=10):
+    """Straight-line fit y = intercept + slope x, with points further than
+    nsig robust sigmas from the line left out, repeated until nothing changes.
+    Returns (intercept, slope, mask_used, rms_of_used)."""
+    x = np.asarray(x, float)
+    y = np.asarray(y, float)
+    use = np.isfinite(x) & np.isfinite(y)
+    for _ in range(maxiter):
+        if use.sum() < 3:
+            break
+        slope, intercept = np.polyfit(x[use], y[use], 1)
+        resid = y - (intercept + slope * x)
+        sig = max(1.4826 * np.median(np.abs(resid[use] - np.median(resid[use]))), 1e-3)
+        new = np.isfinite(resid) & (np.abs(resid) < nsig * sig)
+        if np.array_equal(new, use):
+            break
+        use = new
+    slope, intercept = np.polyfit(x[use], y[use], 1)
+    resid = y - (intercept + slope * x)
+    return intercept, slope, use, float(np.std(resid[use]))
+
+
+def calibration_candidates(df, wcs, shape, which, centre_px=None, r25_px=None):
+    """Catalogue stars matched to sources that can set a calibration:
+    unsaturated in both bands, with no other source inside the aperture, well
+    measured, with finite and well-measured catalogue magnitudes. Where enough
+    of them lie beyond R25 only those are used: the sky ring of a star on the
+    disc is measuring the disc."""
+    centre, radius = field_centre_and_radius(wcs, shape)
+    name = "APASS DR9" if which == "APASS" else "Gaia DR3 synthetic photometry"
+    print(f"[calib] querying {name} within {radius * 60:.0f} arcmin of the field "
+          f"centre...", flush=True)
+    cat = query_calibration_catalogue(which, centre, radius)
+    print(f"   {len(cat):,} catalogue stars in the region", flush=True)
+    m = match_catalogue(df, wcs, cat, shape)
+    stats = {"catalogue": len(cat), "matched": len(m)}
+    if not len(m):
+        return m, stats
+    keep = ~m["Saturated"].astype(bool)
+    crowded = m["Nearest_px"] < m["Aperture_Radius"]
+    good_err = ((m["Mag_inst_B_err"] < CALIB_MAX_INST_ERR)
+                & (m["Mag_inst_V_err"] < CALIB_MAX_INST_ERR))
+    cat_ok = ~((m["Cat_e_B"] > CALIB_MAX_CAT_ERR) | (m["Cat_e_V"] > CALIB_MAX_CAT_ERR))
+    keep &= ~crowded & good_err & cat_ok
+    stats.update({"saturated": int(m["Saturated"].astype(bool).sum()),
+                  "crowded": int(crowded.sum()), "noisy": int((~good_err).sum()),
+                  "bad_catalogue_error": int((~cat_ok).sum()),
+                  "median_sep_arcsec": float(np.median(m["Sep_arcsec"]))})
+    if centre_px is not None and r25_px:
+        outside = np.hypot(m["X_V"] - centre_px[0], m["Y_V"] - centre_px[1]) > r25_px
+        if int((keep & outside).sum()) >= CALIB_MIN_OUTSIDE:
+            stats["inside_galaxy_left_out"] = int((keep & ~outside).sum())
+            keep &= outside
+    m["Candidate"] = keep.values
+    return m, stats
+
+
+def fit_calibration(cand):
+    """Zero points and colour terms from the candidate stars.
+
+        (b-v)_inst      = alpha + beta * (B-V)_cat      (the colour transformation)
+            so (B-V)    = a + c * (b-v)_inst   with c = 1/beta, a = -alpha/beta
+        V_cat - v_inst  = ZP_V + k_V * (B-V)_cat
+        B_cat - b_inst  = ZP_B + k_B * (B-V)_cat   (shown, and a cross-check)
+
+    The colour is fitted this way round because a straight-line fit treats x
+    as exact: the catalogue colour is the precise one. Every fit is
+    sigma-clipped; a star clipped from the colour or the V fit is marked as
+    not used. This replaces one zero point per band from the brightest stars,
+    which left the colour on the camera's own scale - with filters that are
+    not exactly Johnson B and V, every B-V was off by a fraction of itself.
+    """
+    c = cand[cand["Candidate"]].copy()
+    bv_inst = c["Mag_inst_B"] - c["Mag_inst_V"]
+    bv_cat = c["Cat_B"] - c["Cat_V"]
+    alpha, beta, use_c, _ = clipped_line(bv_cat, bv_inst)
+    cterm, a = 1.0 / beta, -alpha / beta
+    rms_c = float(np.std((a + cterm * bv_inst - bv_cat)[use_c]))
+    zpv, kv, use_v, rms_v = clipped_line(bv_cat, c["Cat_V"] - c["Mag_inst_V"])
+    zpb, kb, use_b, rms_b = clipped_line(bv_cat, c["Cat_B"] - c["Mag_inst_B"])
+    used = use_c & use_v
+    corr = float(np.corrcoef(bv_inst, bv_cat)[0, 1]) if len(c) > 2 else np.nan
+    return {"a": a, "c": cterm, "ZP_V": zpv, "k_V": kv, "ZP_B": zpb, "k_B": kb,
+            "rms_colour_fit": rms_c, "rms_V_fit": rms_v, "rms_B_fit": rms_b,
+            "N_candidates": len(c), "N_used": int(used.sum()),
+            "correlation": corr, "used_index": c.index[used]}
+
+
+def apply_calibration(df, cal):
+    """Calibrated B, V, B-V and their errors for every source in df."""
+    b, v = df["Mag_inst_B"].to_numpy(float), df["Mag_inst_V"].to_numpy(float)
+    eb, ev = df["Mag_inst_B_err"].to_numpy(float), df["Mag_inst_V_err"].to_numpy(float)
+    a, c, zp, k = cal["a"], cal["c"], cal["ZP_V"], cal["k_V"]
+    bv = a + c * (b - v)
+    V = v + zp + k * bv
+    B = V + bv
+    # V = (1 - k c) v + k c b + const ; B = (1 - (1+k) c) v + (1+k) c b + const
+    out = df.copy()
+    out["Mag_B_obs"], out["Mag_V_obs"], out["BV_obs"] = B, V, bv
+    out["Mag_B_err"] = np.hypot((1 - (1 + k) * c) * ev, (1 + k) * c * eb)
+    out["Mag_V_err"] = np.hypot((1 - k * c) * ev, k * c * eb)
+    out["BV_err"] = np.abs(c) * np.hypot(eb, ev)
+    return out
+
+
+def calibrate(df, wcs, shape, which, centre_px, r25_px, out_dir, safe):
+    """Run the whole calibration, with Gaia as the fallback catalogue, the
+    checks that stop a run that cannot be right, and the calibration table
+    written out. Returns (cal, catalogue used, stats, matched table)."""
+    cand, stats = calibration_candidates(df, wcs, shape, which, centre_px, r25_px)
+    n_cand = int(cand["Candidate"].sum()) if len(cand) else 0
+    if n_cand < CALIB_MIN_STARS and which == "APASS":
+        print(f"[calib] only {n_cand} usable APASS stars - trying Gaia DR3 synthetic "
+              f"photometry instead", flush=True)
+        which = "GAIA"
+        cand, stats = calibration_candidates(df, wcs, shape, which, centre_px, r25_px)
+        n_cand = int(cand["Candidate"].sum()) if len(cand) else 0
+    if n_cand < CALIB_MIN_STARS:
+        stop(f"CALIBRATION: only {n_cand} usable reference stars (at least "
+             f"{CALIB_MIN_STARS} are needed). Matched {stats.get('matched', 0)}, of "
+             f"which saturated {stats.get('saturated', 0)}, crowded "
+             f"{stats.get('crowded', 0)}, too noisy {stats.get('noisy', 0)}.")
+    print(f"[calib] {stats['matched']} catalogue stars matched (median separation "
+          f"{stats['median_sep_arcsec']:.2f} arcsec); left out: "
+          f"{stats['saturated']} saturated, {stats['crowded']} crowded, "
+          f"{stats['noisy']} too noisy, {stats['bad_catalogue_error']} with large "
+          f"catalogue errors"
+          + (f", {stats['inside_galaxy_left_out']} on the galaxy's disc"
+             if stats.get("inside_galaxy_left_out") else ""), flush=True)
+    cal = fit_calibration(cand)
+    if cal["N_used"] < CALIB_MIN_STARS:
+        stop(f"CALIBRATION: only {cal['N_used']} stars survived the outlier "
+             f"rejection (at least {CALIB_MIN_STARS} are needed).")
+
+    # The colour check. The instrumental colour must rise with the catalogue
+    # colour; if it falls, the frame labelled B is not the blue one. Nothing
+    # else in the output would show it: the diagram would look normal, with
+    # every colour reversed.
+    if not (cal["correlation"] > 0):
+        stop(f"COLOUR CHECK: the instrumental colour b-v FALLS as the catalogue "
+             f"B-V rises (correlation {cal['correlation']:+.2f} over "
+             f"{cal['N_candidates']} stars). The frame used as B is probably the "
+             f"V (or R) frame and the other way round - check the FILTER keywords "
+             f"and the file names.")
+    if cal["correlation"] < 0.5:
+        loud(f"WARNING: the instrumental and catalogue colours agree only weakly "
+             f"(correlation {cal['correlation']:.2f}). The colours below are "
+             f"uncertain.")
+    print(f"[calib] {cal['N_used']} of {cal['N_candidates']} stars used "
+          f"({'APASS DR9' if which == 'APASS' else 'Gaia DR3 synthetic'}):", flush=True)
+    print(f"   B-V = {cal['a']:+.3f} + {cal['c']:.3f} x (b-v)      scatter "
+          f"{cal['rms_colour_fit']:.3f} mag", flush=True)
+    print(f"   V   = v + {cal['ZP_V']:.3f} {cal['k_V']:+.3f} x (B-V)   scatter "
+          f"{cal['rms_V_fit']:.3f} mag", flush=True)
+    print(f"   B   = b + {cal['ZP_B']:.3f} {cal['k_B']:+.3f} x (B-V)   scatter "
+          f"{cal['rms_B_fit']:.3f} mag", flush=True)
+    print(f"   colour correlation {cal['correlation']:+.2f}", flush=True)
+
+    table = cand.copy()
+    table["Used"] = False
+    table.loc[cal["used_index"], "Used"] = True
+    bv_fit = cal["a"] + cal["c"] * (table["Mag_inst_B"] - table["Mag_inst_V"])
+    table["Resid_BV"] = bv_fit - (table["Cat_B"] - table["Cat_V"])
+    table["Resid_V"] = (table["Mag_inst_V"] + cal["ZP_V"] + cal["k_V"] * bv_fit
+                        - table["Cat_V"])
+    path = os.path.join(out_dir, f"{safe}_reference_stars.csv")
+    table.to_csv(path, index=False)
+    print(f"Reference stars, with each one's residual, saved to {path}")
+    return cal, which, stats, cand
+
+
+# ------------------- Diagrams -------------------
+
+def make_cmd(df, base_file, label, name, mu=None, window=None):
+    """Colour-magnitude diagram of the sources in df, saved next to base_file.
+
+    The colour axis follows the data rather than a fixed range - the old fixed
+    -0.5 to 0.5 cut every red source out of the diagram of all sources, which
+    is the diagram that shows where the blue knots stand against the rest.
+    Saturated sources and sources with a B-V error above CMD_MAX_BV_ERR are not
+    drawn (they stay in the tables). With a distance, the right-hand axis is
+    the absolute magnitude M_V. Bars on the left show the typical error at
+    each magnitude.
+    """
+    if not {"Mag_B", "Mag_V"} <= set(df.columns):
+        print(f"Mag_B or Mag_V not found in {label} catalog. CMD not created.")
+        return
+    df = df.copy()
+    df["B-V"] = df["Mag_B"] - df["Mag_V"]
+    cols = [c for c in df.columns if c not in ("B-V", "Mag_V")] + ["B-V", "Mag_V"]
+    df = df[cols]
+    out_file_color = base_file.replace(".csv", "_with_color.csv")
+    df.to_csv(out_file_color, index=False)
+    print(f"File with color index saved to {out_file_color}")
+
+    show = np.isfinite(df["B-V"]) & np.isfinite(df["Mag_V"])
+    if "Saturated" in df.columns:
+        show &= ~df["Saturated"].astype(bool)
+    if "BV_err" in df.columns:
+        show &= df["BV_err"] <= CMD_MAX_BV_ERR
+    d = df[show]
+    if not len(d):
+        print(f"No sources to draw in the {label} diagram.")
+        return
+
+    fig, ax = plt.subplots(figsize=(8, 10))
+    ax.scatter(d["B-V"], d["Mag_V"], s=18, edgecolor="black", facecolor="cyan",
+               alpha=0.7, linewidths=0.4)
+    lo, hi = np.percentile(d["B-V"], [1, 99])
+    lo, hi = min(lo, window[0] if window else lo), max(hi, window[1] if window else hi)
+    pad = 0.1 * max(hi - lo, 0.5)
+    ax.set_xlim(lo - pad, hi + pad)
+    ymin, ymax = np.nanmin(d["Mag_V"]), np.nanmax(d["Mag_V"])
+    ax.set_ylim(ymax + 0.3, ymin - 0.3)
+    if window:
+        for xw in window:
+            ax.axvline(xw, color="tab:blue", ls="--", lw=1)
+    if {"Mag_V_err", "BV_err"} <= set(d.columns):
+        x_bar = lo - 0.5 * pad
+        for m0 in np.arange(np.floor(ymin), np.ceil(ymax), 1.0):
+            sel = (d["Mag_V"] >= m0) & (d["Mag_V"] < m0 + 1)
+            if sel.sum() >= 3:
+                ax.errorbar(x_bar, m0 + 0.5, xerr=np.median(d.loc[sel, "BV_err"]),
+                            yerr=np.median(d.loc[sel, "Mag_V_err"]), color="0.3",
+                            capsize=2, lw=1)
+    ax.set_xlabel("(B - V)$_0$  [mag], corrected for Galactic reddening")
+    ax.set_ylabel("V$_0$  [mag], apparent, corrected for Galactic extinction")
+    if mu is not None and np.isfinite(mu):
+        sec = ax.secondary_yaxis("right", functions=(lambda m: m - mu, lambda M: M + mu))
+        sec.set_ylabel(f"M$_V$  [mag]   (distance modulus {mu:.2f})")
+    ax.set_title(f"CMD of {name} {label}\n{len(d)} sources drawn"
+                 + (f"; dashed lines: the blue-knot colour window" if window else ""))
+    out_cmd = base_file.replace(".csv", "_CMD.png")
+    fig.savefig(out_cmd, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"CMD diagram saved to {out_cmd}")
+
+
+def source_map(data, x, y, title, path, colour="green", label="Measured sources"):
     plt.figure(figsize=(10, 10))
-    plt.imshow(data_V, cmap="gray", origin="lower",
-               vmin=np.percentile(data_V, 5), vmax=np.percentile(data_V, 99))
+    finite = data[np.isfinite(data)]
+    plt.imshow(data, cmap="gray", origin="lower",
+               vmin=np.percentile(finite, 5), vmax=np.percentile(finite, 99))
     plt.colorbar(label="Counts")
-
-    plt.scatter(df_color_filtered["X_V"], df_color_filtered["Y_V"],
-                s=40, edgecolor="green", facecolor="none",
-                label=f"Sources in color range ({CMD_COLOR_MIN} ≤ B-V ≤ {CMD_COLOR_MAX})")
-
-    plt.title(f"{obj_name} - V band with color-filtered sources (no stars)")
+    plt.scatter(x, y, s=40, edgecolor=colour, facecolor="none", label=label)
+    plt.title(title)
     plt.xlabel("X [pixels]")
     plt.ylabel("Y [pixels]")
     plt.legend()
-
-    # One level up, not into result_CMD with the rest. This is the picture that
-    # answers whether the whole run worked - whether what was found traces the
-    # arms of the galaxy - and it should not have to be dug out from among thirty
-    # intermediate files to be looked at.
-    _one_up = os.path.dirname(_outdir) or _outdir
-    out_png_color = os.path.join(_one_up, f"{obj_name}_V_sources_color_filtered.png")
-    plt.savefig(out_png_color, dpi=150)
+    plt.savefig(path, dpi=150)
     plt.close()
-    print(f"V-band color-filtered source map saved to {out_png_color}")
+    print(f"Source map saved to {path}")
 
-    # --- create CMD for the color-filtered catalog ---
-    make_cmd(df_color_filtered, out_csv_color, "(no stars, color filtered)")
 
-else:
-    print("Mag_B or Mag_V not found in cleaned catalog. Color-filtered map not created.")
+def galaxy_centre_pixel(name, wcs, shape):
+    """Where the galaxy sits in this frame, in pixels, from its catalogued
+    position through the (checked) plate solution; None when unknown or
+    outside the frame."""
+    try:
+        x, y = wcs.world_to_pixel(SkyCoord.from_name(name))
+        x, y = float(x), float(y)
+        if 0 <= x < shape[1] and 0 <= y < shape[0]:
+            print(f"[lookup] {name}: centred at pixel ({x:.0f}, {y:.0f})", flush=True)
+            return x, y
+        print(f"[lookup] {name}'s catalogued position falls outside this frame",
+              flush=True)
+    except Exception as exc:
+        print(f"[lookup] galaxy centre unavailable ({exc})", flush=True)
+    return None
 
-if not df_color_filtered.empty:
-    # Galaxy center in pixels - the galaxy's own catalogued position when it
-    # can be looked up, the frame's geometric centre otherwise.
-    x_center, y_center = lookup_center_pixel(obj_name, hdr_V)
-    if x_center is None:
-        x_center = data_V.shape[1] / 2.0
-        y_center = data_V.shape[0] / 2.0
 
-    # Radial distance in pixels. X_V/Y_V, not X_B/Y_B: x_center/y_center are in
-    # V's pixel grid (V's own WCS, or V's frame centre), and B's native pixels
-    # are not generally the same grid at all - see register_B_onto_V().
-    df_color_filtered["Radial_Distance_px"] = np.sqrt(
-        (df_color_filtered["X_V"] - x_center)**2 +
-        (df_color_filtered["Y_V"] - y_center)**2
-    )
+# ------------------- The run -------------------
 
-    # Pixel scale from WCS (deg/pixel -> rad/pixel)
-    wcs_V = WCS(hdr_V)
-    pixscale_deg = np.mean(np.abs(wcs_V.pixel_scale_matrix.diagonal()))
-    pixscale_rad = np.deg2rad(pixscale_deg)
+def parse_args(argv=None):
+    ap = argparse.ArgumentParser(
+        description="Blue knots of a galaxy from a B and a V frame: calibrated "
+                    "photometry, colour-magnitude diagram, radial profile. "
+                    "Started without arguments it asks its questions instead.")
+    ap.add_argument("--folder", help="folder holding the frames; which is B and which "
+                                     "is V is read from the headers")
+    ap.add_argument("--b", help="the B frame, when naming the files yourself")
+    ap.add_argument("--v", help="the V frame")
+    ap.add_argument("--galaxy", help="galaxy name (otherwise from the OBJECT keyword)")
+    ap.add_argument("--distance-mpc", type=float, help="distance; otherwise looked up")
+    ap.add_argument("--ebv", type=float, help="Galactic E(B-V); otherwise looked up")
+    ap.add_argument("--catalog", choices=["APASS", "GAIA"], default=CALIB_CATALOGUE,
+                    help="reference stars for the calibration (default APASS; Gaia DR3 "
+                         "synthetic photometry is also the automatic fallback)")
+    ap.add_argument("--max-bv-err", type=float, default=KNOT_MAX_BV_ERR,
+                    help="largest B-V error a blue knot may have, in mag")
+    ap.add_argument("--out-dir", help="write everything into this folder (default: a "
+                                      "new folder result_CMD_<galaxy>_<date>_<time> "
+                                      "beside the frames)")
+    ap.add_argument("--yes", action="store_true",
+                    help="accept every default without asking")
+    return ap.parse_args(argv)
 
-    # Distance in parsec
-    distance_pc = distance * 1.0e6
 
-    # Conversion factor (pc/pixel)
-    px_to_pc = pixscale_rad * distance_pc
+def main(argv=None):
+    global ARGS, ask, ask_yes_no
+    ARGS = parse_args(argv)
+    if ARGS.yes:
+        # The shared folder questions (which frame, whether to combine) take
+        # their defaults too.
+        ask = lambda prompt, default=None, cast=str: cast(default)
+        ask_yes_no = lambda prompt, default=False: default
 
-    # Add distances in pc
+    print("=== Photometry Input ===")
+    folder = ARGS.folder
+    if not folder and not (ARGS.b and ARGS.v):
+        folder = _norm_path(_ask(
+            "Path to the folder holding the frames (Enter to name the two files instead)",
+            "", str))
+    fits_file_B, fits_file_V = ARGS.b, ARGS.v
+    obj_name = ARGS.galaxy
+    groups, donors = {}, {}
+    if folder and os.path.isdir(folder):
+        chosen, donors, groups, found = frames_from_folder(folder, ("B", "V"))
+        fits_file_B, fits_file_V = chosen["B"], chosen["V"]
+        obj_name = obj_name or found
+    elif folder:
+        print("[input] there is no folder at " + folder + " - naming the two files "
+              "instead", flush=True)
+        folder = None
+    if not fits_file_B:
+        fits_file_B = _norm_path(_ask("Path to B-band FITS", None, str))
+    if not fits_file_V:
+        fits_file_V = _norm_path(_ask("Path to V-band FITS", None, str))
+    for p in (fits_file_B, fits_file_V):
+        if not os.path.isfile(p):
+            stop(f"there is no file at {p}")
+    if not obj_name:
+        try:
+            obj_name = str(fits.getheader(fits_file_V).get("OBJECT", "")).strip() or None
+        except Exception:
+            obj_name = None
+    if not obj_name:
+        obj_name = _ask("Galaxy name", None, str)
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", obj_name.strip())
+
+    datadir = folder or os.path.dirname(os.path.abspath(fits_file_V))
+    if ARGS.out_dir:
+        out_dir = os.path.abspath(ARGS.out_dir)
+        os.makedirs(out_dir, exist_ok=True)
+    else:
+        out_dir = new_run_folder(datadir, "CMD", obj_name)
+    print(f"[out] writing everything to {out_dir}")
+
+    combined_note = []
+    for role in ("B", "V"):
+        paths = groups.get(role)
+        if not paths and donors.get(role):
+            # One exposure with no plate solution: it borrows one from a solved
+            # exposure of the same field, and the solved copy is what is measured.
+            path = fits_file_B if role == "B" else fits_file_V
+            data_c, wcs_c, _bpm, info_c = load_frame(path, donors[role])
+            out = os.path.join(out_dir, f"{safe}_{role}_solved.fits")
+            save_frame(out, data_c, wcs_c, info_c, history=(
+                "Plate solution fitted against " + os.path.basename(donors[role]),))
+            combined_note.append(f"{role}: plate solution borrowed from "
+                                 f"{os.path.basename(donors[role])}")
+            if role == "B":
+                fits_file_B = out
+            else:
+                fits_file_V = out
+            continue
+        if not paths:
+            continue
+        data_c, wcs_c, _bpm, info_c = combine_exposures(paths, donors.get(role), role)
+        out = os.path.join(out_dir, f"{safe}_{role}_combined.fits")
+        save_frame(out, data_c, wcs_c, info_c,
+                   history=(f"Median of {len(paths)} exposures",
+                            "Combined by Blue_Clusters_From_Images.py"))
+        combined_note.append(f"{role}: median of {len(paths)} exposures")
+        if role == "B":
+            fits_file_B = out
+        else:
+            fits_file_V = out
+        del data_c
+
+    # ---- the published numbers, shown and confirmed before use ------------
+    print("Looking the galaxy up...", flush=True)
+    distance = offered("Distance (Mpc)", lookup_distance(obj_name),
+                       "Cosmicflows-3, Tully et al. 2016", " Mpc", ARGS.distance_mpc)
+    E_BV = offered("Galactic colour excess E(B-V)", lookup_extinction(obj_name),
+                   "Schlafly & Finkbeiner 2011, via IRSA", "", ARGS.ebv)
+    if distance <= 0 or E_BV < 0:
+        stop("the distance must be positive and E(B-V) not negative")
+    A_V = R_V * E_BV
+    mu = 5.0 * np.log10(distance * 1.0e6) - 5.0
+    print(f"Using distance {distance:.2f} Mpc (distance modulus {mu:.2f}),"
+          f" E(B-V) = {E_BV:.4f}, A_V = {A_V:.3f}", flush=True)
+    for line in combined_note:
+        print("[input] " + line, flush=True)
+
+    # ---- frames -----------------------------------------------------------
+    path_B, raw_B, data_B, hdr_B = subtract_background_and_save(fits_file_B, out_dir)
+    path_V, raw_V, data_V, hdr_V = subtract_background_and_save(fits_file_V, out_dir)
+    shape_V = data_V.shape
+    wcs_V = WCS(hdr_V).celestial
+    if not wcs_V.has_celestial:
+        stop("the V frame has no plate solution; plate-solve it and rerun")
+    scale_arcsec = 3600.0 * float(np.sqrt(abs(np.linalg.det(wcs_V.pixel_scale_matrix))))
+
+    info = {}
+    for band, raw, hdr in (("B", raw_B, hdr_B), ("V", raw_V, hdr_V)):
+        sat, sat_src = saturation_level(raw, hdr)
+        gain, gain_src = detector_gain(hdr)
+        rn, rn_src = read_noise(hdr)
+        info[band] = {"sat": sat, "gain": gain, "rn": rn}
+        print(f"   {band}: saturation level {sat:.0f} ADU ({sat_src}); gain "
+              f"{gain:.2f} e-/ADU ({gain_src}); read noise {rn:g} e- ({rn_src})",
+              flush=True)
+
+    # Where the galaxy is and how far it reaches, for the detection window, the
+    # calibration stars and the trimming of the catalogue.
+    centre_px = galaxy_centre_pixel(obj_name, wcs_V, shape_V)
+    r25 = None
+    geom = None
+    window = None
+    try:
+        geom = hyperleda_geometry(obj_name)
+        if geom and geom.get("d25_arcmin"):
+            r25 = 0.5 * geom["d25_arcmin"] * 60.0 / scale_arcsec
+            if centre_px is not None:
+                window = galaxy_window(shape_V, centre_px, r25, margin=1.5)
+                if window is None:
+                    print("[window] the galaxy fills this frame - working on all of it",
+                          flush=True)
+                else:
+                    y0, y1, x0, x1 = window
+                    print(f"[window] the galaxy occupies {x1 - x0} x {y1 - y0} of "
+                          f"{shape_V[1]} x {shape_V[0]} pixels; the rest is sky",
+                          flush=True)
+        else:
+            print("[window] no isophotal radius available - working on the whole frame",
+                  flush=True)
+    except Exception as exc:
+        print(f"[window] could not work out where the galaxy ends ({exc}) - working "
+              f"on the whole frame", flush=True)
+
+    # ---- detection ----------------------------------------------------------
+    print("Registering B onto V...", flush=True)
+    b_to_v, v_to_b, reg_text = register_B_onto_V(data_B, data_V, path_B, path_V)
+    window_B = None
+    if window is not None:
+        # The same part of the sky in B's own grid, with a margin for rotation.
+        y0, y1, x0, x1 = window
+        corners = v_to_b(np.array([[x0, y0], [x1, y0], [x0, y1], [x1, y1]], float))
+        bx0, by0 = np.floor(corners.min(axis=0)).astype(int) - 20
+        bx1, by1 = np.ceil(corners.max(axis=0)).astype(int) + 20
+        window_B = (max(by0, 0), min(by1, data_B.shape[0]),
+                    max(bx0, 0), min(bx1, data_B.shape[1]))
+    xB, yB, fB, fwhm_B = detect_sources(data_B, raw_B, "B", info["B"]["sat"], window_B)
+    xV, yV, fV, fwhm_V = detect_sources(data_V, raw_V, "V", info["V"]["sat"], window)
+    fwhm = max(fwhm_B, fwhm_V)
+
+    # One list of sources on the V grid: everything found in V, and whatever was
+    # found in B with nothing in V within one FWHM - a very blue knot can be
+    # clear in B and lost in V. Each is then measured in both frames at the
+    # same place on the sky through the same aperture. Before, each band was
+    # measured where it found the source, through an aperture sized from that
+    # source's width in that band: the B and V apertures of one knot differed,
+    # and so its colour depended on its size as much as on its light.
+    xyB_on_V = b_to_v(np.column_stack([xB, yB])) if len(xB) else np.empty((0, 2))
+    xyV = np.column_stack([xV, yV]) if len(xV) else np.empty((0, 2))
+    if len(xyV) and len(xyB_on_V):
+        d, _ = cKDTree(xyV).query(xyB_on_V, k=1)
+        b_only = d > fwhm
+    else:
+        b_only = np.ones(len(xyB_on_V), dtype=bool)
+    xy = np.vstack([xyV, xyB_on_V[b_only]])
+    found_in = np.array(["V"] * len(xyV) + ["B"] * int(b_only.sum()), dtype="<U2")
+    if len(xyV) and len(xyB_on_V):
+        dV, _ = cKDTree(xyB_on_V).query(xyV, k=1)
+        found_in[:len(xyV)][dV <= fwhm] = "BV"
+
+    r_ap = APERTURE_SCALE * fwhm
+    r_in, r_out = ANNULUS_INNER_SCALE * r_ap, ANNULUS_OUTER_SCALE * r_ap
+    xy_in_B = v_to_b(xy) if len(xy) else xy
+    edge = r_out + 2
+    inside = ((xy[:, 0] > edge) & (xy[:, 0] < shape_V[1] - edge)
+              & (xy[:, 1] > edge) & (xy[:, 1] < shape_V[0] - edge)
+              & (xy_in_B[:, 0] > edge) & (xy_in_B[:, 0] < data_B.shape[1] - edge)
+              & (xy_in_B[:, 1] > edge) & (xy_in_B[:, 1] < data_B.shape[0] - edge))
+    xy, xy_in_B, found_in = xy[inside], xy_in_B[inside], found_in[inside]
+    if not len(xy):
+        stop("no sources were found in both frames")
+    print(f"Measuring {len(xy):,} sources in both bands through one aperture of "
+          f"{r_ap:.1f} px ({APERTURE_SCALE:g} x the FWHM of {fwhm:.2f} px; sky ring "
+          f"{r_in:.1f}-{r_out:.1f} px)  [found in both: {int((found_in == 'BV').sum()):,},"
+          f" V only: {int((found_in == 'V').sum()):,}, B only: "
+          f"{int((found_in == 'B').sum()):,}]", flush=True)
+
+    fluxV, errV, peakV, skyV = aperture_photometry_at(
+        data_V, raw_V, xy, r_ap, r_in, r_out, info["V"]["gain"], info["V"]["rn"])
+    fluxB, errB, peakB, skyB = aperture_photometry_at(
+        data_B, raw_B, xy_in_B, r_ap, r_in, r_out, info["B"]["gain"], info["B"]["rn"])
+    magV, magV_err = instrumental(fluxV, errV)
+    magB, magB_err = instrumental(fluxB, errB)
+    widthV = np.array([star_width(data_V, x, y, FWHM_WINDOW_SIZE, s)
+                       for (x, y), s in zip(xy, skyV)])
+    widthB = np.array([star_width(data_B, x, y, FWHM_WINDOW_SIZE, s)
+                       for (x, y), s in zip(xy_in_B, skyB)])
+    ra, dec = wcs_V.all_pix2world(xy[:, 0], xy[:, 1], 0)
+
+    df = pd.DataFrame({
+        "X_B": xy_in_B[:, 0], "Y_B": xy_in_B[:, 1], "FWHM_B": widthB,
+        "Flux_B": fluxB, "Flux_B_err": errB,
+        "X_V": xy[:, 0], "Y_V": xy[:, 1], "FWHM_V": widthV,
+        "Flux_V": fluxV, "Flux_V_err": errV,
+        "Mag_inst_B": magB, "Mag_inst_B_err": magB_err,
+        "Mag_inst_V": magV, "Mag_inst_V_err": magV_err,
+        "Peak_B": peakB, "Peak_V": peakV,
+        "Saturated": (peakB > info["B"]["sat"]) | (peakV > info["V"]["sat"]),
+        "Found_in": found_in, "Aperture_Radius": r_ap,
+    })
+    n_all = len(df)
+    df = df[(df["Flux_B"] > 0) & (df["Flux_V"] > 0)].reset_index(drop=True)
+    print(f"   {len(df):,} of {n_all:,} have positive flux in both bands; "
+          f"{int(df['Saturated'].sum()):,} of them saturated", flush=True)
+    if len(df) < 2:
+        stop("fewer than two sources have positive flux in both bands")
+    nearest = cKDTree(df[["X_V", "Y_V"]].values).query(df[["X_V", "Y_V"]].values, k=2)[0][:, 1]
+    df["Nearest_px"] = nearest
+
+    # ---- the plate solution, checked, then the sky positions ---------------
+    bright = df[~df["Saturated"]].sort_values("Flux_V", ascending=False)
+    wcs_V, wcs_note = verify_plate_solution(bright[["X_V", "Y_V"]].to_numpy(float),
+                                            df[["X_V", "Y_V"]].to_numpy(float),
+                                            wcs_V, shape_V)
+    ra, dec = wcs_V.all_pix2world(df["X_V"].values, df["Y_V"].values, 0)
+    df["RA"], df["DEC"] = ra, dec
+    if "REPAIRED" in wcs_note:
+        # The galaxy's centre was placed through the old solution.
+        centre_px = galaxy_centre_pixel(obj_name, wcs_V, shape_V)
+        # And the V frame written to the output carries the repaired solution, so
+        # that a tool reading positions through it later (the comparison with the
+        # HII regions) puts them where they are.
+        with fits.open(path_V, mode="update") as hdul:
+            h = hdul[0].header
+            for key in list(h.keys()):
+                if re.match(r"^(CTYPE|CRVAL|CRPIX|CDELT|CUNIT|CD\d_\d|PC\d_\d|"
+                            r"PV\d_\d+|A_|B_|AP_|BP_|LONPOLE|LATPOLE|WCSAXES|"
+                            r"RADESYS|EQUINOX)", key):
+                    h.remove(key, ignore_missing=True, remove_all=True)
+            h.update(wcs_V.to_header(relax=True))
+            h["HISTORY"] = "Plate solution repaired against Gaia DR3 by Blue_Clusters"
+
+    csv_filename = os.path.join(out_dir, f"{safe}_photometry_results.csv")
+    df.to_csv(csv_filename, index=False)
+    print(f"Instrumental photometry saved to {csv_filename}")
+
+    # ---- calibration --------------------------------------------------------
+    cal, catalogue, cal_stats, matched = calibrate(
+        df, wcs_V, shape_V, ARGS.catalog, centre_px, r25, out_dir, safe)
+    df = apply_calibration(df, cal)
+
+    # The dust of our own galaxy taken out. A_V dims V; B is dimmed by
+    # A_V + E(B-V), which is what the colour excess means.
+    df["Mag_B"] = df["Mag_B_obs"] - (A_V + E_BV)
+    df["Mag_V"] = df["Mag_V_obs"] - A_V
+    df["M_V"] = df["Mag_V"] - mu
+    df["ZP_V_used"], df["k_V_used"] = cal["ZP_V"], cal["k_V"]
+    df["Colour_a_used"], df["Colour_c_used"] = cal["a"], cal["c"]
+    df["N_ref_used"] = cal["N_used"]
+    df["Calibration_catalogue"] = catalogue
+    df["A_V_used"], df["E_BV_used"] = A_V, E_BV
+    df["Distance_Mpc_used"], df["Distance_modulus_used"] = distance, mu
+    df["FWHM_measured_B"], df["FWHM_measured_V"] = fwhm_B, fwhm_V
+
+    calib_file = os.path.join(out_dir, f"{safe}_calibrated_photometry.csv")
+    df.to_csv(calib_file, index=False)
+    print(f"Calibrated photometry saved to {calib_file}")
+
+    source_map(data_V, xy[:, 0], xy[:, 1], f"{obj_name} - V band with measured sources",
+               os.path.join(out_dir, f"{safe}_V_sources.png"))
+    source_map(data_B, xy_in_B[:, 0], xy_in_B[:, 1],
+               f"{obj_name} - B band with measured sources",
+               os.path.join(out_dir, f"{safe}_B_sources.png"), colour="blue")
+
+    # ---- foreground stars out ---------------------------------------------
+    # Every source that is a catalogue star (matched within CALIB_MATCH_RADIUS),
+    # and every source on a Gaia star with a significant parallax or proper
+    # motion, is in front of the galaxy.
+    is_star = np.zeros(len(df), dtype=bool)
+    if len(matched):
+        is_star[matched["row"].astype(int).values] = True
+    n_cat_stars = int(is_star.sum())
+    n_gaia = 0
+    try:
+        fg, _fgdiag = gaia_foreground_stars(wcs_V, shape_V)
+        if fg is not None and len(fg):
+            d, _ = cKDTree(np.asarray(fg, float)).query(df[["X_V", "Y_V"]].values, k=1)
+            on_fg = (d <= FOREGROUND_TOL) & ~is_star
+            n_gaia = int(on_fg.sum())
+            is_star |= on_fg
+    except Exception as exc:
+        print(f"    could not check against Gaia ({exc}); foreground stars other than "
+              f"the catalogue stars remain in the catalogue", flush=True)
+    df_clean = df[~is_star].reset_index(drop=True)
+    print(f"    {n_cat_stars} sources are catalogue stars and {n_gaia} more sit on a "
+          f"Gaia foreground star (parallax or proper motion significant); "
+          f"{len(df_clean)} left", flush=True)
+    n_outside = 0
+    if r25 and centre_px is not None:
+        d = np.hypot(df_clean["X_V"] - centre_px[0], df_clean["Y_V"] - centre_px[1])
+        n_outside = int((d > r25).sum())
+        df_clean = df_clean[(d <= r25).values].reset_index(drop=True)
+        print(f"    {n_outside} sources lie beyond R25 ({r25:.0f} px), outside the "
+              f"galaxy, and are dropped; {len(df_clean)} left", flush=True)
+    else:
+        print("    no galaxy radius available; the catalogue is not trimmed to the "
+              "galaxy", flush=True)
+
+    out_file = calib_file.replace("_calibrated_photometry.csv",
+                                  "_calibrated_photometry_no_stars.csv")
+    df_clean.to_csv(out_file, index=False)
+    print(f"Cleaned file saved to {out_file}")
+    source_map(data_V, df_clean["X_V"], df_clean["Y_V"],
+               f"{obj_name} - V band with detected sources (no stars)",
+               os.path.join(out_dir, f"{safe}_V_sources_no_stars.png"),
+               label="Cleaned sources (no stars)")
+
+    make_cmd(df, calib_file, "(all sources)", obj_name, mu)
+    make_cmd(df_clean, out_file, "(no stars)", obj_name, mu,
+             window=(CMD_COLOR_MIN, CMD_COLOR_MAX))
+
+    # ---- the blue knots -----------------------------------------------------
+    bv0 = df_clean["Mag_B"] - df_clean["Mag_V"]
+    in_window = (bv0 >= CMD_COLOR_MIN) & (bv0 <= CMD_COLOR_MAX)
+    precise = df_clean["BV_err"] <= ARGS.max_bv_err
+    unsat = ~df_clean["Saturated"].astype(bool)
+    df_color_filtered = df_clean[in_window & precise & unsat].copy()
+    df_color_filtered["B-V"] = bv0[in_window & precise & unsat]
+    df_color_filtered = df_color_filtered.reset_index(drop=True)
+    print(f"Blue knots: {len(df_color_filtered)} sources with {CMD_COLOR_MIN} <= "
+          f"(B-V)0 <= {CMD_COLOR_MAX} and a B-V error of at most {ARGS.max_bv_err} mag"
+          f"  ({int((in_window & ~precise).sum())} more in the colour window were too "
+          f"noisy to classify, {int((in_window & ~unsat).sum())} saturated)", flush=True)
+    out_csv_color = os.path.join(out_dir,
+                                 f"{safe}_calibrated_photometry_no_stars_color_filtered.csv")
+    df_color_filtered.to_csv(out_csv_color, index=False)
+    print(f"Color-filtered photometry saved to {out_csv_color}")
+    source_map(data_V, df_color_filtered["X_V"], df_color_filtered["Y_V"],
+               f"{obj_name} - V band with the blue knots",
+               os.path.join(out_dir, f"{safe}_V_sources_color_filtered.png"),
+               label=f"Blue knots ({CMD_COLOR_MIN} <= (B-V)0 <= {CMD_COLOR_MAX})")
+    make_cmd(df_color_filtered, out_csv_color, "(blue knots)", obj_name, mu,
+             window=(CMD_COLOR_MIN, CMD_COLOR_MAX))
+
+    write_summary(os.path.join(out_dir, "run_summary.txt"), locals())
+
+    if df_color_filtered.empty:
+        print("No color-filtered sources available to compute radial distances.")
+        return 0
+
+    # ---- radial profile -----------------------------------------------------
+    if centre_px is None:
+        centre_px = (shape_V[1] / 2.0, shape_V[0] / 2.0)
+        print("[profile] the galaxy's centre is unknown - using the frame's centre")
+    x_center, y_center = centre_px
+    df_color_filtered["Radial_Distance_px"] = np.hypot(
+        df_color_filtered["X_V"] - x_center, df_color_filtered["Y_V"] - y_center)
+    px_to_pc = np.deg2rad(scale_arcsec / 3600.0) * distance * 1.0e6
     df_color_filtered["Radial_Distance_pc"] = df_color_filtered["Radial_Distance_px"] * px_to_pc
-
-    # Sort by radial distance
     df_color_filtered = df_color_filtered.sort_values("Radial_Distance_px").reset_index(drop=True)
-
-    # Save CSV with all distances
     out_csv_color_rad = os.path.join(
-        _outdir,
-        f"{obj_name}_calibrated_photometry_no_stars_color_filtered_with_radius.csv"
-    )
+        out_dir, f"{safe}_calibrated_photometry_no_stars_color_filtered_with_radius.csv")
     df_color_filtered.to_csv(out_csv_color_rad, index=False)
     print(f"Color-filtered photometry with radial distances saved to {out_csv_color_rad}")
 
-    # -----------------------------------------------------------
-    # Radial density profile in pixels
-    # -----------------------------------------------------------
-    bin_width_px = Step_size
-    max_r_px = df_color_filtered["Radial_Distance_px"].max()
-    bins_px = np.arange(0, max_r_px + bin_width_px, bin_width_px)
-
-    counts_px, edges_px = np.histogram(df_color_filtered["Radial_Distance_px"], bins=bins_px)
-    areas_px2 = np.pi * (edges_px[1:]**2 - edges_px[:-1]**2)
-    densities_px = counts_px / areas_px2
-    bin_centers_px = 0.5 * (edges_px[1:] + edges_px[:-1])
-
-    # Save profile (px)
-    df_profile_px = pd.DataFrame({
-        "R_inner_px": edges_px[:-1],
-        "R_outer_px": edges_px[1:],
-        "R_center_px": bin_centers_px,
-        "N_sources": counts_px,
-        "Annulus_area_px2": areas_px2,
-        "Density_per_px2": densities_px
-    })
-    out_csv_profile_px = os.path.join(_outdir, f"{obj_name}_radial_density_profile.csv")
-    df_profile_px.to_csv(out_csv_profile_px, index=False)
-    print(f"Radial density profile (px) saved to {out_csv_profile_px}")
-
-    # Step profile (px)
-    step_r_px, step_density_px, step_counts_px = [], [], []
-    for i in range(len(densities_px)):
-        r_in, r_out = edges_px[i], edges_px[i+1]
-        step_r_px.extend([r_in, r_out])
-        step_density_px.extend([densities_px[i], densities_px[i]])
-        step_counts_px.extend([counts_px[i], counts_px[i]])
-
-    df_step_px = pd.DataFrame({
-        "R_step_px": step_r_px,
-        "Density_step_per_px2": step_density_px,
-        "N_sources_step": step_counts_px
-    })
-    out_csv_step_px = os.path.join(_outdir, f"{obj_name}_radial_density_profile_step.csv")
-    df_step_px.to_csv(out_csv_step_px, index=False)
-    print(f"Radial density step profile (px) saved to {out_csv_step_px}")
-
-    plt.figure(figsize=(8,6))
-    plt.step(step_r_px, step_density_px, where="post", color="blue", linewidth=2)
-    plt.xlabel("Radial distance [pixels]")
-    plt.ylabel("Source density [1/pixel²]")
-    plt.title(f"Radial density step profile of {obj_name} (pixels)")
-    out_png_step_px = os.path.join(_outdir, f"{obj_name}_radial_density_profile_step.png")
-    plt.savefig(out_png_step_px, dpi=150)
-    plt.close()
-    print(f"Radial density step plot (px) saved to {out_png_step_px}")
-
-    # -----------------------------------------------------------
-    # Radial density profile in pc
-    # -----------------------------------------------------------
-    bin_width_pc = bin_width_px * px_to_pc
-    max_r_pc = df_color_filtered["Radial_Distance_pc"].max()
-    bins_pc = np.arange(0, max_r_pc + bin_width_pc, bin_width_pc)
-
-    counts_pc, edges_pc = np.histogram(df_color_filtered["Radial_Distance_pc"], bins=bins_pc)
-    areas_pc2 = np.pi * (edges_pc[1:]**2 - edges_pc[:-1]**2)
-    densities_pc = counts_pc / areas_pc2
-    bin_centers_pc = 0.5 * (edges_pc[1:] + edges_pc[:-1])
-
-    # Save profile (pc)
-    df_profile_pc = pd.DataFrame({
-        "R_inner_pc": edges_pc[:-1],
-        "R_outer_pc": edges_pc[1:],
-        "R_center_pc": bin_centers_pc,
-        "N_sources": counts_pc,
-        "Annulus_area_pc2": areas_pc2,
-        "Density_per_pc2": densities_pc
-    })
-    out_csv_profile_pc = os.path.join(_outdir, f"{obj_name}_radial_density_profile_pc.csv")
-    df_profile_pc.to_csv(out_csv_profile_pc, index=False)
-    print(f"Radial density profile (pc) saved to {out_csv_profile_pc}")
-
-    # Step profile (pc)
-    step_r_pc, step_density_pc, step_counts_pc = [], [], []
-    for i in range(len(densities_pc)):
-        r_in, r_out = edges_pc[i], edges_pc[i+1]
-        step_r_pc.extend([r_in, r_out])
-        step_density_pc.extend([densities_pc[i], densities_pc[i]])
-        step_counts_pc.extend([counts_pc[i], counts_pc[i]])
-
-    df_step_pc = pd.DataFrame({
-        "R_step_pc": step_r_pc,
-        "Density_step_per_pc2": step_density_pc,
-        "N_sources_step": step_counts_pc
-    })
-    out_csv_step_pc = os.path.join(_outdir, f"{obj_name}_radial_density_profile_step_pc.csv")
-    df_step_pc.to_csv(out_csv_step_pc, index=False)
-    print(f"Radial density step profile (pc) saved to {out_csv_step_pc}")
-
-    plt.figure(figsize=(8,6))
-    plt.step(step_r_pc, step_density_pc, where="post", color="green", linewidth=2)
-    plt.xlabel("Radial distance [pc]")
-    plt.ylabel("Source density [1/pc²]")
-    plt.title(f"Radial density step profile of {obj_name} (pc)")
-    out_png_step_pc = os.path.join(_outdir, f"{obj_name}_radial_density_profile_step_pc.png")
-    plt.savefig(out_png_step_pc, dpi=150)
-    plt.close()
-    print(f"Radial density step plot (pc) saved to {out_png_step_pc}")
-
+    for unit, scale_u, colour in (("px", 1.0, "blue"), ("pc", px_to_pc, "green")):
+        radii = df_color_filtered["Radial_Distance_px"] * scale_u
+        width = Step_size * scale_u
+        edges = np.arange(0, radii.max() + width, width)
+        counts, edges = np.histogram(radii, bins=edges)
+        areas = np.pi * (edges[1:] ** 2 - edges[:-1] ** 2)
+        dens = counts / areas
+        suffix = "" if unit == "px" else "_pc"
+        pd.DataFrame({f"R_inner_{unit}": edges[:-1], f"R_outer_{unit}": edges[1:],
+                      f"R_center_{unit}": 0.5 * (edges[1:] + edges[:-1]),
+                      "N_sources": counts, f"Annulus_area_{unit}2": areas,
+                      f"Density_per_{unit}2": dens}).to_csv(
+            os.path.join(out_dir, f"{safe}_radial_density_profile{suffix}.csv"), index=False)
+        step_r = np.column_stack([edges[:-1], edges[1:]]).ravel()
+        step_d = np.repeat(dens, 2)
+        step_n = np.repeat(counts, 2)
+        pd.DataFrame({f"R_step_{unit}": step_r, f"Density_step_per_{unit}2": step_d,
+                      "N_sources_step": step_n}).to_csv(
+            os.path.join(out_dir, f"{safe}_radial_density_profile_step{suffix}.csv"),
+            index=False)
+        plt.figure(figsize=(8, 6))
+        plt.step(step_r, step_d, where="post", color=colour, linewidth=2)
+        plt.xlabel("Radial distance [pixels]" if unit == "px" else "Radial distance [pc]")
+        plt.ylabel("Source density [1/pixel²]" if unit == "px" else "Source density [1/pc²]")
+        plt.title(f"Radial density step profile of {obj_name} "
+                  f"({'pixels' if unit == 'px' else 'pc'})")
+        png = os.path.join(out_dir, f"{safe}_radial_density_profile_step{suffix}.png")
+        plt.savefig(png, dpi=150)
+        plt.close()
+        print(f"Radial density step profile ({unit}) saved to {png}")
 
     # =======================================================================
     # Stage 6 - deprojection and the shared radial analysis
     # =======================================================================
     #
-    # Everything above measured the knots as they appear on the sky. But a spiral
-    # galaxy is a flat disk seen at an angle, so a distance measured in the image
-    # is not the distance inside the galaxy. Tilted, a round disk projects to an
-    # ellipse, and the direction across the ellipse is squashed while the direction
-    # along it is not.
-    #
-    # This stage stretches the squashed direction back out and recomputes the
-    # profile. It does so several different ways - uncorrected, from the HyperLEDA
-    # catalogue, and from the knots themselves - because the published comparison
-    # of deprojection methods found none to be reliably better than the others and
-    # recommended applying several and comparing. The spread between the curves is
-    # the uncertainty on the radii.
-    #
-    # It also recomputes the ring areas honestly. The profile above divides each
-    # count by the full mathematical area of its ring, pi*(r_out^2 - r_in^2). A ring
-    # wider than the frame is only partly covered by the image, so dividing by the
-    # full area makes the outer rings look emptier than they are. The new profile
-    # measures the area actually observed and flags any ring the frame has clipped.
-    # Both areas are written to the CSV so the two can be compared.
-
+    # A spiral galaxy is a flat disk seen at an angle, so a distance measured in
+    # the image is not the distance inside the galaxy. This stage stretches the
+    # squashed direction back out and recomputes the profile several ways -
+    # uncorrected, from the HyperLEDA catalogue, and from the knots themselves -
+    # because no deprojection method has been found reliably better than the
+    # others. The spread between the curves is the uncertainty on the radii. It
+    # also uses the ring area actually covered by the frame.
     try:
-        pass  # from radial_profiles, inlined above
-        from astropy.wcs import WCS as _WCS
-
-        # Orientation straight from the WCS, rather than assuming north is up.
-        # Assuming it when it is false rotates the whole deprojection silently.
-        _north, _mirrored = 90.0, False
-        try:
-            _cd = _WCS(hdr_V).celestial.pixel_scale_matrix
-            _north = float(np.degrees(np.arctan2(_cd[1, 1], _cd[0, 1]))) % 360.0
-            _east = float(np.degrees(np.arctan2(_cd[1, 0], _cd[0, 0]))) % 360.0
-            _mirrored = ((_east - _north) % 360.0) > 180.0
-            print(f"[deproject] orientation from WCS: north {_north:.1f} deg from +x, "
-                  f"{'mirrored' if _mirrored else 'not mirrored'}")
-        except Exception as _exc:
-            print(f"[deproject] could not read the orientation from the WCS ({_exc}); "
-                  f"assuming north is up")
-
-        _frame = (0.0, float(data_V.shape[1]), 0.0, float(data_V.shape[0]))
-        _prefix = os.path.join(_outdir, f"{obj_name}_deprojected")
-
+        north, mirrored = image_orientation(wcs_V)
+        print(f"[deproject] orientation from WCS: north {north:.1f} deg from +x, "
+              f"{'mirrored' if mirrored else 'not mirrored'}")
         print("")
         print("Deprojecting and rebuilding the radial profile...")
         run_profiles(
             df_color_filtered["X_V"].to_numpy(dtype=float),
             df_color_filtered["Y_V"].to_numpy(dtype=float),
-            (x_center, y_center), _frame, _prefix,
-            f"Blue knots - {obj_name}",
-            galaxy=obj_name,
-            north_angle=_north, mirrored=_mirrored,
-            sector_method=True,
+            (x_center, y_center), (0.0, float(shape_V[1]), 0.0, float(shape_V[0])),
+            os.path.join(out_dir, f"{safe}_deprojected"),
+            f"Blue knots - {obj_name}", galaxy=obj_name,
+            north_angle=north, mirrored=mirrored, sector_method=True,
             rings=20, scale=px_to_pc, unit="pc")
-    except Exception as _exc:
-        print(f"[deproject] the deprojection stage failed ({type(_exc).__name__}: "
-              f"{_exc}). Everything above was still written.")
+    except Exception as exc:
+        print(f"[deproject] the deprojection stage failed ({type(exc).__name__}: "
+              f"{exc}). Everything above was still written.")
+    return 0
 
 
-else:
-    print("No color-filtered sources available to compute radial distances.")
+def write_summary(path, v):
+    """Every number this run used and found, in one file beside its output."""
+    cal, st = v["cal"], v["cal_stats"]
+    lines = [
+        f"Blue_Clusters_From_Images.py run summary",
+        f"galaxy              {v['obj_name']}",
+        f"B frame             {v['fits_file_B']}",
+        f"V frame             {v['fits_file_V']}",
+    ] + [f"combined            {n}" for n in v["combined_note"]] + [
+        f"distance            {v['distance']:.3f} Mpc (distance modulus {v['mu']:.3f})",
+        f"E(B-V)              {v['E_BV']:.4f}   A_V = {v['A_V']:.3f}",
+        f"plate solution      {v['wcs_note']}",
+        f"registration        B onto V {v['reg_text']}",
+        f"star FWHM           B {v['fwhm_B']:.2f} px, V {v['fwhm_V']:.2f} px",
+        f"aperture            {v['r_ap']:.2f} px radius, sky ring {v['r_in']:.1f}-"
+        f"{v['r_out']:.1f} px, the same in both bands",
+        f"saturation          B {v['info']['B']['sat']:.0f} ADU, V {v['info']['V']['sat']:.0f} ADU",
+        f"gain                B {v['info']['B']['gain']:.2f}, V {v['info']['V']['gain']:.2f} e-/ADU",
+        f"sources measured    {len(v['df'])} (positive flux in both bands)",
+        f"calibration         {v['catalogue']}: {cal['N_used']} of {cal['N_candidates']} "
+        f"stars used ({st.get('matched', 0)} matched)",
+        f"   B-V = {cal['a']:+.4f} + {cal['c']:.4f} x (b-v)   scatter {cal['rms_colour_fit']:.3f}",
+        f"   V   = v + {cal['ZP_V']:.4f} {cal['k_V']:+.4f} x (B-V)   scatter {cal['rms_V_fit']:.3f}",
+        f"   B   = b + {cal['ZP_B']:.4f} {cal['k_B']:+.4f} x (B-V)   scatter {cal['rms_B_fit']:.3f}",
+        f"   colour correlation {cal['correlation']:+.3f}",
+        f"foreground removed  {v['n_cat_stars']} catalogue stars, {v['n_gaia']} Gaia "
+        f"foreground stars, {v['n_outside']} beyond R25",
+        f"sources left        {len(v['df_clean'])}",
+        f"blue knots          {len(v['df_color_filtered'])}  ({CMD_COLOR_MIN} <= (B-V)0 <= "
+        f"{CMD_COLOR_MAX}, B-V error <= {ARGS.max_bv_err}, not saturated)",
+    ]
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + "\n")
+    print(f"Run summary saved to {path}")
+
+
+if __name__ == "__main__":
+    sys.exit(main())
