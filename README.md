@@ -154,9 +154,18 @@ whose combined centre drifts as the seeing changes. Every track comes with a
 picture of the same field at the start, middle and end of the run: if the
 circle moves and the dot under it does not, it is not an object.
 
-Everything is written to a `result` folder: a `_tracks.txt` with each object's
-rate, direction, position and identification, one picture per object, and a
-`run_log.txt` of everything that appeared on the screen.
+Each run writes to a new `result_<date>_<time>` folder, so an earlier run is
+never overwritten: a `_tracks.txt` with each object's rate, direction (position
+angle, north through east), its position at the middle of the first exposure,
+its measured position and S/N in every frame where it was seen, and the
+identification; one picture per object; and a `run_log.txt` of everything that
+appeared on the screen.
+
+The star width is measured on the first frame, so the tool needs no setting for
+a particular telescope (`--psf_px` overrides it). Frames are sorted by their own
+clock and lined up through their plate solutions, rotation and a meridian flip
+included; frames of one target taken on different nights, or with a different
+binning, are searched as separate runs.
 
 ---
 
