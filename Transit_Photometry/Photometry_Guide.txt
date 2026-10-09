@@ -71,6 +71,15 @@ Inside Output_<star name>:
     G_light_curve.xlsx         the light curve as a spreadsheet
     stars_used.png             a chart of the field, target and comparison
                                stars marked
+    stars_used_VarAstro.png    the same chart under VarAstro's 1.5 MB limit
+                               (RGB, 256-colour palette)
+    <star>_<date>_G_BJD_TDB.txt
+                               the light curve for upload to VarAstro: plain
+                               text, no header, three columns - BJD_TDB,
+                               variable minus comparisons (mag), error. The
+                               date is the UTC date of the first frame. Not
+                               written when BJD_TDB could not be computed
+                               (no target coordinates in the header).
     Details\
       G_wcs_comp_C1..C12.png   a plot per comparison star (target minus that
                                star)
@@ -84,6 +93,7 @@ written beside the original ones, which are never touched:
 
     G_reselected_light_curve.png
     G_reselected_light_curve_JD.png
+    <star>_<date>_G_reselected_BJD_TDB.txt
     G_reselected_light_curve.xlsx
     G_reselected_comp_C..png
     Details\G_reselected.csv
