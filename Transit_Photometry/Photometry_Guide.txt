@@ -62,7 +62,12 @@ Inside Output_<star name>:
                                SUMMARY.txt)
     comparison_stars.txt     <- how each comparison star behaved. Read this
                                 before choosing stars yourself.
-    G_wcs_light_curve.png      the light curve
+    G_wcs_light_curve.png      the light curve against minutes from the start
+    G_wcs_light_curve_JD.png   the same curve against BJD_TDB (JD_UTC when
+                               BJD could not be computed), whole day
+                               subtracted and written on the axis
+                               (each point is drawn as its error bar only,
+                               no marker, so a small error stays visible)
     G_light_curve.xlsx         the light curve as a spreadsheet
     stars_used.png             a chart of the field, target and comparison
                                stars marked
@@ -78,6 +83,7 @@ After you have chosen the comparison stars yourself, the new results are
 written beside the original ones, which are never touched:
 
     G_reselected_light_curve.png
+    G_reselected_light_curve_JD.png
     G_reselected_light_curve.xlsx
     G_reselected_comp_C..png
     Details\G_reselected.csv

@@ -372,6 +372,22 @@ def _target_radec_of(header):
     return None
 
 
+def jd_axis(frame):
+    """Absolute time axis for the light curve: (x, label), or None.
+
+    BJD_TDB when it was computed, otherwise the JD_UTC of mid-exposure. The
+    whole day is subtracted and written in the label - with 7-digit numbers
+    on the ticks matplotlib falls back to an offset in the corner that is
+    easy to miss, and the fraction of a day is what is read off the plot.
+    """
+    for col, name in (("bjd_tdb", "BJD_TDB"), ("jd", "JD_UTC")):
+        if col in frame.columns and frame[col].notna().any():
+            t = frame[col].to_numpy(float)
+            t0 = float(np.floor(np.nanmin(t)))
+            return t - t0, f"{name} - {t0:.0f} (days)"
+    return None
+
+
 def bjd_tdb(jd_utc, header, radec=None):
     """BJD_TDB of a mid-exposure JD_UTC, for the target at `radec` (degrees).
 
@@ -2312,7 +2328,7 @@ def _engine_main():
             plt.figure(figsize=(10, 4))
             yerr = good["mag_comp_minus_target_err"] if "mag_comp_minus_target_err" in good.columns else None
             plt.errorbar(xaxis, good["mag_comp_minus_target"], yerr=yerr,
-                         fmt="o", markersize=4, elinewidth=1, capsize=2)
+                         fmt="none", elinewidth=1, capsize=3)
             plt.gca().invert_yaxis()
             plt.xlabel(xlabel)
             plt.ylabel("Comparison ensemble - target (mag)")
@@ -2322,6 +2338,22 @@ def _engine_main():
             plt.tight_layout()
             plt.savefig(f"{args.output}_light_curve.png", dpi=150)
             print(f"Plot written to {args.output}_light_curve.png")
+            # the same curve again against absolute time, as a second picture
+            jdx = jd_axis(good)
+            if jdx is not None:
+                plt.close()
+                plt.figure(figsize=(10, 4))
+                plt.errorbar(jdx[0], good["mag_comp_minus_target"], yerr=yerr,
+                             fmt="none", elinewidth=1, capsize=3)
+                plt.gca().invert_yaxis()
+                plt.xlabel(jdx[1])
+                plt.ylabel("Comparison ensemble - target (mag)")
+                plt.title(f"Light curve  (aperture={config['r_aperture']:.1f}px, "
+                          f"FWHM={config['median_fwhm']:.1f}px, "
+                          f"{len(config['final_comps'])} comp star(s) used)")
+                plt.tight_layout()
+                plt.savefig(f"{args.output}_light_curve_JD.png", dpi=150)
+                print(f"Plot written to {args.output}_light_curve_JD.png")
 
     # --- optional: one difference plot per comparison star, vs the target ---
     try:
@@ -2356,8 +2388,8 @@ def _engine_main():
                 diff_err = np.sqrt(sub[errcol] ** 2 + sub[target_errcol] ** 2)
 
             plt.figure(figsize=(10, 4))
-            plt.errorbar(xaxis, diff, yerr=diff_err, fmt="o", markersize=4,
-                         elinewidth=1, capsize=2)
+            plt.errorbar(xaxis, diff, yerr=diff_err, fmt="none",
+                         elinewidth=1, capsize=3)
             plt.gca().invert_yaxis()
             plt.xlabel(xlabel)
             plt.ylabel(f"{c} - {target_name} (mag)")
@@ -3730,6 +3762,40 @@ def finder_chart(image, stars, config, out_path, target_name, channel, note=""):
     plt.close(fig)
 
 
+def _plot_main_curve(plt, x, y, err, xlabel, flip_marks, step_marks, config,
+                     measured_noise, title, out_path):
+    plt.figure(figsize=(10, 4))
+    # error bars only, no markers: with a deep eclipse the bars are shorter
+    # than a round marker and disappeared behind it; the caps still show
+    # where each point is
+    plt.errorbar(x, y, yerr=err,
+                 fmt="none", elinewidth=1, capsize=3)
+    if flip_marks:
+        for t in flip_marks:
+            plt.axvline(t, color="darkorange", ls="--", lw=1.2)
+        plt.plot([], [], color="darkorange", ls="--", lw=1.2, label="meridian flip")
+    if step_marks:
+        for t in step_marks:
+            plt.axvline(t, color="purple", ls=":", lw=1.6)
+        plt.plot([], [], color="purple", ls=":", lw=1.6, label="throughput step")
+    if flip_marks or step_marks:
+        plt.legend(fontsize=8)
+    plt.gca().invert_yaxis()
+    plt.xlabel(xlabel)
+    plt.ylabel("Variable - comparison ensemble (mag)")
+    n_used = len(config.get("final_comps", []))
+    n_rej = len(config.get("rejected_comps", []))
+    sub = f"{n_used} comparison stars used"
+    if n_rej:
+        sub += f"   ({n_rej} rejected)"
+    if measured_noise is not None and np.isfinite(measured_noise):
+        sub += f"   -   error bars = measured noise, {measured_noise:.1f} mmag"
+    plt.title(title + "\n" + sub, fontsize=10)
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150)
+    plt.close()
+
+
 def plot_channel(df, config, out_base, title, flip_marks=None, step_marks=None,
                  measured_noise=None, comp_base=None, channel=None):
     import matplotlib
@@ -3755,33 +3821,22 @@ def plot_channel(df, config, out_base, title, flip_marks=None, step_marks=None,
     # that put eclipses UPWARDS, which is how V1111 Cep came out as a hill.
     # The measurement is identical either way, only its sign is written down.
     y = -good["mag_comp_minus_target"]
-    plt.figure(figsize=(10, 4))
-    plt.errorbar(x, y, yerr=err,
-                 fmt="o", markersize=4, elinewidth=1, capsize=2)
-    if flip_marks:
-        for t in flip_marks:
-            plt.axvline(t, color="darkorange", ls="--", lw=1.2)
-        plt.plot([], [], color="darkorange", ls="--", lw=1.2, label="meridian flip")
-    if step_marks:
-        for t in step_marks:
-            plt.axvline(t, color="purple", ls=":", lw=1.6)
-        plt.plot([], [], color="purple", ls=":", lw=1.6, label="throughput step")
-    if flip_marks or step_marks:
-        plt.legend(fontsize=8)
-    plt.gca().invert_yaxis()
-    plt.xlabel("Elapsed time (minutes)")
-    plt.ylabel("Variable - comparison ensemble (mag)")
-    n_used = len(config.get("final_comps", []))
-    n_rej = len(config.get("rejected_comps", []))
-    sub = f"{n_used} comparison stars used"
-    if n_rej:
-        sub += f"   ({n_rej} rejected)"
-    if measured_noise is not None and np.isfinite(measured_noise):
-        sub += f"   -   error bars = measured noise, {measured_noise:.1f} mmag"
-    plt.title(title + "\n" + sub, fontsize=10)
-    plt.tight_layout()
-    plt.savefig(f"{out_base}_light_curve.png", dpi=150)
-    plt.close()
+    # the same curve twice: against minutes from the start, and against
+    # absolute time (a second picture, not a replacement)
+    _plot_main_curve(plt, x, y, err, "Elapsed time (minutes)", flip_marks, step_marks,
+                     config, measured_noise, title, f"{out_base}_light_curve.png")
+    jdx = jd_axis(good)
+    if jdx is not None:
+        # the flip and step marks are kept in minutes; carried over to the
+        # day axis through the frames themselves
+        xm = x.to_numpy(float)
+        ok = np.isfinite(xm) & np.isfinite(jdx[0])
+        slope, icpt = np.polyfit(xm[ok], jdx[0][ok], 1) if ok.sum() >= 2 else (np.nan, np.nan)
+
+        def to_jd(marks):
+            return [float(slope * t + icpt) for t in marks or [] if np.isfinite(slope)]
+        _plot_main_curve(plt, jdx[0], y, err, jdx[1], to_jd(flip_marks), to_jd(step_marks),
+                         config, measured_noise, title, f"{out_base}_light_curve_JD.png")
 
     tname = config["target_name"]
     for c in config["chosen_comps"]:
@@ -3797,8 +3852,8 @@ def plot_channel(df, config, out_base, title, flip_marks=None, step_marks=None,
             err = np.sqrt(sub[f"{c}_magerr"] ** 2 + sub[f"{tname}_magerr"] ** 2)
         status = ("REJECTED" if c in config.get("rejected_comps", []) else "used")
         plt.figure(figsize=(10, 4))
-        plt.errorbar(sub["elapsed_min"], diff, yerr=err, fmt="o", markersize=4,
-                     elinewidth=1, capsize=2)
+        plt.errorbar(sub["elapsed_min"], diff, yerr=err, fmt="none",
+                     elinewidth=1, capsize=3)
         plt.gca().invert_yaxis()
         plt.xlabel("Elapsed time (minutes)")
         plt.ylabel(f"{tname} - {c} (mag)")

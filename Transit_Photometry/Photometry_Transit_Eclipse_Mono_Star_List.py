@@ -296,6 +296,22 @@ def _target_radec_of(header):
     return None
 
 
+def jd_axis(frame):
+    """Absolute time axis for the light curve: (x, label), or None.
+
+    BJD_TDB when it was computed, otherwise the JD_UTC of mid-exposure. The
+    whole day is subtracted and written in the label - with 7-digit numbers
+    on the ticks matplotlib falls back to an offset in the corner that is
+    easy to miss, and the fraction of a day is what is read off the plot.
+    """
+    for col, name in (("bjd_tdb", "BJD_TDB"), ("jd", "JD_UTC")):
+        if col in frame.columns and frame[col].notna().any():
+            t = frame[col].to_numpy(float)
+            t0 = float(np.floor(np.nanmin(t)))
+            return t - t0, f"{name} - {t0:.0f} (days)"
+    return None
+
+
 def bjd_tdb(jd_utc, header, radec=None):
     """BJD_TDB of a mid-exposure JD_UTC, for the target at `radec` (degrees).
 
@@ -2588,7 +2604,7 @@ def main():
             plt.figure(figsize=(10, 4))
             yerr = good["mag_comp_minus_target_err"] if "mag_comp_minus_target_err" in good.columns else None
             plt.errorbar(xaxis, good["mag_comp_minus_target"], yerr=yerr,
-                         fmt="o", markersize=4, elinewidth=1, capsize=2)
+                         fmt="none", elinewidth=1, capsize=3)
             plt.gca().invert_yaxis()
             plt.xlabel(xlabel)
             plt.ylabel("Comparison ensemble - target (mag)")
@@ -2598,6 +2614,22 @@ def main():
             plt.tight_layout()
             plt.savefig(f"{args.output}_light_curve.png", dpi=150)
             print(f"Plot written to {args.output}_light_curve.png")
+            # the same curve again against absolute time, as a second picture
+            jdx = jd_axis(good)
+            if jdx is not None:
+                plt.close()
+                plt.figure(figsize=(10, 4))
+                plt.errorbar(jdx[0], good["mag_comp_minus_target"], yerr=yerr,
+                             fmt="none", elinewidth=1, capsize=3)
+                plt.gca().invert_yaxis()
+                plt.xlabel(jdx[1])
+                plt.ylabel("Comparison ensemble - target (mag)")
+                plt.title(f"Light curve  (aperture={config['r_aperture']:.1f}px, "
+                          f"FWHM={config['median_fwhm']:.1f}px, "
+                          f"{len(config['final_comps'])} comp star(s) used)")
+                plt.tight_layout()
+                plt.savefig(f"{args.output}_light_curve_JD.png", dpi=150)
+                print(f"Plot written to {args.output}_light_curve_JD.png")
 
     # --- optional: one difference plot per comparison star, vs the target ---
     try:
@@ -2632,8 +2664,8 @@ def main():
                 diff_err = np.sqrt(sub[errcol] ** 2 + sub[target_errcol] ** 2)
 
             plt.figure(figsize=(10, 4))
-            plt.errorbar(xaxis, diff, yerr=diff_err, fmt="o", markersize=4,
-                         elinewidth=1, capsize=2)
+            plt.errorbar(xaxis, diff, yerr=diff_err, fmt="none",
+                         elinewidth=1, capsize=3)
             plt.gca().invert_yaxis()
             plt.xlabel(xlabel)
             plt.ylabel(f"{c} - {target_name} (mag)")
