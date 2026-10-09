@@ -276,27 +276,130 @@ def read_fits_data(path):
 
 
 def get_obs_time_jd(header, path):
+    """Julian Date (UTC) of the MIDDLE of the exposure.
+
+    Every source of the time is brought to the same instant. DATE-OBS, MJD-OBS
+    and MaxIm's JD all give the START of the exposure, so half the exposure is
+    added to each of them; a keyword whose comment says it is the midpoint is
+    taken as it is. Before, DATE-OBS was moved to mid-exposure and MJD-OBS and
+    JD were not, so the same night read through two keywords disagreed by half
+    an exposure - 30 s on 60 s frames, which is a shift of the mid-transit
+    time, not noise.
+    """
+    exptime = 0.0
+    try:
+        exptime = float(header.get("EXPTIME", header.get("EXPOSURE", 0.0)) or 0.0)
+    except (TypeError, ValueError):
+        exptime = 0.0
+    half = exptime / 2.0 / 86400.0
+
+    def _is_mid(key):
+        try:
+            return "mid" in str(header.comments[key]).lower()
+        except Exception:
+            return False
+
+    for key in ("JD-MID", "MJD-MID"):
+        if key in header:
+            try:
+                v = float(header[key])
+                return v + (2400000.5 if key.startswith("MJD") else 0.0)
+            except (TypeError, ValueError):
+                pass
     for key in ("JD", "JD-OBS", "JD_OBS"):
         if key in header:
             try:
-                return float(header[key])
+                return float(header[key]) + (0.0 if _is_mid(key) else half)
             except (TypeError, ValueError):
                 pass
     for key in ("MJD-OBS", "MJD"):
         if key in header:
             try:
-                return float(header[key]) + 2400000.5
+                return float(header[key]) + 2400000.5 + (0.0 if _is_mid(key) else half)
             except (TypeError, ValueError):
                 pass
     if "DATE-OBS" in header:
         try:
             t = Time(header["DATE-OBS"], format="isot", scale="utc")
-            if "EXPTIME" in header:
-                t = t + float(header["EXPTIME"]) / 2.0 / 86400.0
-            return t.jd
+            return t.jd + (0.0 if _is_mid("DATE-OBS") else half)
         except Exception:
             pass
     return None
+
+
+def _site_of(header):
+    """The observatory, from the header, as an astropy EarthLocation.
+
+    MaxIm writes SITELAT / SITELONG (sexagesimal strings) and SITEELEV; LCO
+    writes LATITUDE / LONGITUD / HEIGHT in degrees and metres. Without either,
+    None - the barycentric correction is then made for the centre of the
+    Earth, which is wrong by at most 21 ms (the light time across one Earth
+    radius) and does not matter for a light curve."""
+    from astropy.coordinates import EarthLocation, Angle
+    import astropy.units as _u
+    for klat, klon, kh in (("SITELAT", "SITELONG", "SITEELEV"),
+                           ("LATITUDE", "LONGITUD", "HEIGHT"),
+                           ("OBSGEO-B", "OBSGEO-L", "OBSGEO-H")):
+        if klat in header and klon in header:
+            try:
+                lat, lon = header[klat], header[klon]
+                lat = Angle(lat, unit=_u.deg) if isinstance(lat, str) else Angle(float(lat), unit=_u.deg)
+                lon = Angle(lon, unit=_u.deg) if isinstance(lon, str) else Angle(float(lon), unit=_u.deg)
+                h = float(header.get(kh, 0.0) or 0.0)
+                return EarthLocation.from_geodetic(lon, lat, h * _u.m)
+            except Exception:
+                continue
+    return None
+
+
+def _target_radec_of(header):
+    """The target's coordinates from the header, in degrees, or None."""
+    from astropy.coordinates import SkyCoord
+    import astropy.units as _u
+    for kra, kdec, unit in (("CAT-RA", "CAT-DEC", (_u.hourangle, _u.deg)),
+                            ("OBJCTRA", "OBJCTDEC", (_u.hourangle, _u.deg)),
+                            ("RA", "DEC", None)):
+        if kra in header and kdec in header:
+            try:
+                ra, dec = header[kra], header[kdec]
+                if unit is None:
+                    unit = ((_u.hourangle, _u.deg) if isinstance(ra, str)
+                            else (_u.deg, _u.deg))
+                c = SkyCoord(ra, dec, unit=unit)
+                return float(c.ra.deg), float(c.dec.deg)
+            except Exception:
+                continue
+    return None
+
+
+def bjd_tdb(jd_utc, header, radec=None):
+    """BJD_TDB of a mid-exposure JD_UTC, for the target at `radec` (degrees).
+
+    What every published transit and eclipse time is given in. The light from
+    the star reaches the Sun's barycentre up to 8.3 minutes before or after it
+    reaches the telescope, depending on where the Earth is in its orbit, and
+    TDB differs from UTC by 69 s; the column used to be labelled BJD while it
+    held JD_UTC, so neither correction was in it. Returns NaN when the target
+    coordinates are not known."""
+    import astropy.units as _u
+    from astropy.coordinates import SkyCoord
+    if jd_utc is None or not np.isfinite(jd_utc):
+        return np.nan
+    if radec is None:
+        radec = _target_radec_of(header)
+    if radec is None:
+        return np.nan
+    try:
+        site = _site_of(header)
+        t = Time(float(jd_utc), format="jd", scale="utc", location=site)
+        if site is None:
+            from astropy.coordinates import EarthLocation
+            t = Time(float(jd_utc), format="jd", scale="utc",
+                     location=EarthLocation.from_geocentric(0, 0, 0, unit=_u.m))
+        c = SkyCoord(radec[0] * _u.deg, radec[1] * _u.deg)
+        return float((t.tdb + t.light_travel_time(c, kind="barycentric")).jd)
+    except Exception:
+        return np.nan
 
 
 def filter_name(header):
@@ -565,6 +668,84 @@ def measure_flux(data, x, y, r_aper, r_in, r_out, gain=1.0, ron=0.0, dark=0.0):
     return float(flux), float(flux_err), float(sky_per_pix)
 
 
+def frame_saturation_level(header, data):
+    """The level above which a pixel of this frame is not trusted, in ADU.
+
+    MAXLIN (end of the linear range) when the header has it, then SATURATE.
+    Without either, the frame itself: pixels clipped by the converter all
+    sit at the same top value, so when four or more pixels share the frame's
+    maximum, that maximum is the clipping level and 98% of it is used.
+    Otherwise nothing is known and nothing is flagged (inf).
+    """
+    for k in ("MAXLIN", "SATURATE"):
+        try:
+            v = float(header.get(k))
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(v) and v > 0:
+            return v
+    finite = np.asarray(data, float)
+    finite = finite[np.isfinite(finite)]
+    if finite.size == 0:
+        return np.inf
+    m = float(finite.max())
+    if np.count_nonzero(finite >= m - max(0.5, 1e-6 * abs(m))) >= 4:
+        return 0.98 * m
+    return np.inf
+
+
+def aperture_peak(data, x, y, r):
+    """Highest pixel value inside the aperture of radius r at (x, y)."""
+    if not (np.isfinite(x) and np.isfinite(y) and np.isfinite(r)):
+        return np.nan
+    ny, nx = data.shape
+    x0, x1 = max(int(np.floor(x - r)), 0), min(int(np.ceil(x + r)) + 1, nx)
+    y0, y1 = max(int(np.floor(y - r)), 0), min(int(np.ceil(y + r)) + 1, ny)
+    if x1 <= x0 or y1 <= y0:
+        return np.nan
+    yy, xx = np.mgrid[y0:y1, x0:x1]
+    vals = data[y0:y1, x0:x1][(xx - x) ** 2 + (yy - y) ** 2 <= r * r]
+    vals = vals[np.isfinite(vals)]
+    return float(vals.max()) if vals.size else np.nan
+
+
+def apply_saturation(df, names, target_name, max_frac=0.02):
+    """Act on the per-frame saturation flags `<star>_sat`.
+
+    A saturated star's flux in that frame is already marked not-ok where it
+    was measured. Here: a comparison star saturated in more than `max_frac`
+    of the frames is taken out of the ensemble altogether, since keeping it
+    only in its unsaturated frames changes the ensemble from frame to frame.
+    The target's saturated frames are counted and reported. Returns the list
+    of comparison stars taken out.
+    """
+    n = len(df)
+    dropped = []
+    if n == 0:
+        return dropped
+    for name in names:
+        col = f"{name}_sat"
+        if col not in df.columns:
+            continue
+        k = int(df[col].fillna(False).astype(bool).sum())
+        if k == 0:
+            continue
+        if name == target_name:
+            print(f"    ! target {name} saturated in {k} of {n} frames - "
+                  f"those frames are left out of the light curve")
+        elif k > max_frac * n:
+            dropped.append(name)
+            df[f"{name}_ok"] = False
+            df[f"{name}_mag"] = np.nan
+            df[f"{name}_magerr"] = np.nan
+            print(f"    ! comparison star {name} saturated in {k} of {n} frames - "
+                  f"removed from the ensemble")
+        else:
+            print(f"    comparison star {name} saturated in {k} of {n} frames - "
+                  f"those frames are not used for it")
+    return dropped
+
+
 # --------------------------------------------------------------------------
 # Interactive configuration (FWHM multiples + star selection)
 # --------------------------------------------------------------------------
@@ -656,7 +837,36 @@ def default_output_dir(input_dir, ref_file):
     name = "_".join(name.split()).rstrip(". ")
     if not name:
         name = "target"
-    return os.path.join(input_dir, f"{name}_results")
+    return new_run_dir(os.path.join(input_dir, f"{name}_results"))
+
+
+_RUN_STAMP = re.compile(r"_\d{8}_\d{6}$")
+
+
+def new_run_dir(path):
+    """`path` if it does not exist yet, else `path_<YYYYmmdd_HHMMSS>`.
+
+    A second run never writes over the first one's results.
+    """
+    if not os.path.exists(path):
+        return path
+    import datetime as _dt
+    return path + "_" + _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+def _summary_stem(out_dir):
+    """'SUMMARY', or 'SUMMARY_<YYYYmmdd_HHMMSS>' when a summary is already there."""
+    return os.path.basename(new_run_dir(os.path.join(out_dir, "SUMMARY")))
+
+
+def latest_runs(roots):
+    """One output folder per target: the newest run of each."""
+    best = {}
+    for r in roots:
+        key = _RUN_STAMP.sub("", os.path.basename(os.path.normpath(r)))
+        if key not in best or os.path.getmtime(r) >= os.path.getmtime(best[key]):
+            best[key] = r
+    return [best[k] for k in sorted(best)]
 
 
 def prompt_float(msg, default):
@@ -666,11 +876,81 @@ def prompt_float(msg, default):
         raw = ""
     if raw == "":
         return default
+    while True:
+        try:
+            return float(raw.replace(",", "."))
+        except ValueError:
+            # Asked again rather than replaced by the default: a mistyped
+            # gain that silently became 1.0 changes every error bar.
+            print(f"  ! '{raw}' is not a number - please type a number "
+                  f"(check the keyboard language)")
+        try:
+            raw = input(f"{msg} [{default}]: ").strip()
+        except EOFError:
+            raw = ""
+        if raw == "":
+            return default
+
+
+def header_gain_ron(path):
+    """Gain (e-/ADU) and read noise (e-) from the first header that has them.
+
+    MaxIm writes the true gain as EGAIN. Its GAIN keyword is, on CMOS cameras,
+    the driver's gain SETTING (0..~500), not electrons per ADU, so GAIN is
+    trusted only when there is no EGAIN and the value is below 20. Returns
+    (gain, ron, note) with None for whatever the header does not hold.
+    """
+    gain = ron = None
+    src = []
     try:
-        return float(raw)
-    except ValueError:
-        print("  ! not a number, using default")
-        return default
+        with fits.open(path) as hdul:
+            for hdu in hdul:
+                h = hdu.header
+                if gain is None:
+                    for k in ("EGAIN", "GAIN"):
+                        v = h.get(k)
+                        try:
+                            v = float(v)
+                        except (TypeError, ValueError):
+                            continue
+                        if v > 0 and (k == "EGAIN" or v < 20):
+                            gain = v
+                            src.append(k)
+                            break
+                if ron is None:
+                    for k in ("RDNOISE", "READNOIS", "RON"):
+                        v = h.get(k)
+                        try:
+                            v = float(v)
+                        except (TypeError, ValueError):
+                            continue
+                        if v > 0:
+                            ron = v
+                            src.append(k)
+                            break
+    except Exception:
+        pass
+    return gain, ron, ", ".join(src)
+
+
+def ask_gain_ron(args, path):
+    """Fill args.gain / args.ron, offering the header's values as defaults."""
+    g, r, src = header_gain_ron(path) if path else (None, None, "")
+    if src:
+        print(f"  from the FITS header ({os.path.basename(path)}): {src}")
+    if args.gain is None:
+        args.gain = prompt_float(
+            "Camera gain (electrons per ADU)" +
+            (" - value from the header" if g is not None else
+             " - not in the header (EGAIN), check the camera's data"),
+            g if g is not None else 1.0)
+    if args.ron is None:
+        args.ron = prompt_float(
+            "Camera read noise RON (electrons)" +
+            (" - value from the header" if r is not None else
+             " - not in the header (RDNOISE); default is a community "
+             "estimate, not an official spec"),
+            r if r is not None else 3.7)
 
 
 def configure_from_csv(ref_data, stars, args):
@@ -1447,10 +1727,12 @@ def process_all(input_dir, ref_file, star_list_path, args):
         found_ax, found_ay = ax0 + dx, ay0 + dy
         sign_x, sign_y = ORIENTATIONS[orientation][1]
 
-        row = {"file": fname, "jd": get_obs_time_jd(header, path),
+        row = {"file": fname, "jd": (_jd := get_obs_time_jd(header, path)),
+               "bjd_tdb": bjd_tdb(_jd, header),
                "anchor_dx": dx, "anchor_dy": dy, "anchor_corr": peak,
                "orientation": orientation}
 
+        sat_lvl = frame_saturation_level(header, data)
         comp_fluxes = []
         comp_ferrs = []
         comp_names_used = []
@@ -1464,6 +1746,11 @@ def process_all(input_dir, ref_file, star_list_path, args):
                                             gain=args.gain, ron=args.ron, dark=args.dark)
 
             good = ok and np.isfinite(flux) and flux > 0
+            pk = aperture_peak(data, xr, yr, r_aper)
+            row[f"{name}_peak"] = pk
+            row[f"{name}_sat"] = bool(np.isfinite(pk) and pk >= sat_lvl)
+            if row[f"{name}_sat"]:
+                good = False
             row[f"{name}_x"] = xr
             row[f"{name}_y"] = yr
             row[f"{name}_flux"] = flux
@@ -1549,6 +1836,14 @@ def process_all(input_dir, ref_file, star_list_path, args):
               f"target={status}{orient_flag}")
 
     df = pd.DataFrame(rows)
+
+    # --- saturation, frame by frame ---
+    sat_dropped = apply_saturation(df, use_names, target_name)
+    if sat_dropped:
+        config["saturated_comps"] = sat_dropped
+        config["chosen_comps"] = [c for c in config["chosen_comps"]
+                                  if c not in sat_dropped]
+        df = recompute_ensemble(df, target_name, config["chosen_comps"])
 
     # --- elapsed time in minutes, from the first (earliest) timed frame ---
     # (computed BEFORE the stability check below, since that check needs it
@@ -1650,7 +1945,7 @@ def process_all(input_dir, ref_file, star_list_path, args):
     # --- put the 6 requested columns first, keep everything else after ---
     target_mag_col = f"{target_name}_mag"
     target_flux_col = f"{target_name}_flux"
-    front_cols = ["jd", "elapsed_min", target_mag_col,
+    front_cols = ["jd", "bjd_tdb", "elapsed_min", target_mag_col,
                   "mag_comp_minus_target", target_flux_col,
                   "flux_comp_minus_target", "target_mag_calibrated"]
     front_cols = [c for c in front_cols if c in df.columns]
@@ -1978,13 +2273,7 @@ def _engine_main():
         print(f"  created output folder: {args.output_dir}")
     args.output = os.path.join(args.output_dir, os.path.basename(args.output))
 
-    if args.gain is None:
-        args.gain = prompt_float("Camera gain (electrons per ADU) - check your FITS "
-                                  "header's EGAIN keyword if present", 1.0)
-    if args.ron is None:
-        args.ron = prompt_float("Camera Read Out Noise RON (electrons) - check your "
-                                 "camera's datasheet/bias frames if known; the suggested "
-                                 "default is a community estimate, not an official spec", 3.7)
+    ask_gain_ron(args, args.ref_file)
 
     print(f"\nUsing gain={args.gain} e-/ADU, RON={args.ron} e-, dark={args.dark} ADU "
           f"for the noise model.")
@@ -2570,8 +2859,10 @@ def measure_channel(frames, plane, stars, ref_idx, cfg, route):
     for fr in frames:
         img = fits.getdata(fr["path"])[plane].astype(float)
         h = fr["header"]
+        sat_lvl = frame_saturation_level(h, img)
         row = {"file": os.path.basename(fr["path"]),
-               "jd": get_obs_time_jd(h, fr["path"]),
+               "jd": (_jd := get_obs_time_jd(h, fr["path"])),
+               "bjd_tdb": bjd_tdb(_jd, h),
                "flipped": bool(fr.get("flipped", False))}
 
         if route == "wcs":
@@ -2696,6 +2987,11 @@ def measure_channel(frames, plane, stars, ref_idx, cfg, route):
                 img, xr, yr, r_ap, r_in, r_out,
                 gain=cfg["gain"], ron=cfg["ron"], dark=cfg["dark"])
             good = bool(ok and np.isfinite(flux) and flux > 0)
+            pk = aperture_peak(img, xr, yr, r_ap)
+            row[f"{name}_peak"] = pk
+            row[f"{name}_sat"] = bool(np.isfinite(pk) and pk >= sat_lvl)
+            if row[f"{name}_sat"]:
+                good = False
             if pair_drop and name == target_name:
                 # the seeing here is wider than the pair is apart: no aperture
                 # separates them without throwing the star away
@@ -2717,12 +3013,14 @@ def measure_channel(frames, plane, stars, ref_idx, cfg, route):
     df["elapsed_min"] = (df["jd"] - t0) * 1440.0 if np.isfinite(t0) else np.nan
 
     comps = names[1:]
+    sat_dropped = apply_saturation(df, names, target_name)
+    comps = [c for c in comps if c not in sat_dropped]
     df = recompute_ensemble(df, target_name, comps)
 
     config = dict(cfg)
     config.setdefault("per_star_fwhm", {n: cfg["median_fwhm"] for n in names})
     config.update(target_name=target_name, chosen_comps=comps,
-                  anchor_name=anchor_name, final_comps=list(comps),
+                  anchor_name=anchor_name, saturated_comps=sat_dropped, final_comps=list(comps),
                   comp_stability={}, comp_drift={}, comp_tail_offset={},
                   comp_completeness={}, completeness_failed=[], rejected_comps=[],
                   comp_trend_ratio={}, drift_rejected=[])
@@ -3068,28 +3366,233 @@ def noise_mmag(df, comp_names, segments=None):
     return v
 
 
-def target_depth_mag(df, faint_frac=0.10):
-    """How deep the target went, measured robustly.
+def _box_scan(t, v, mids, durs, min_points, slope=True):
+    """Best box (lowest residuals, positive depth) among the (mid, duration)
+    pairs given, for m = a + b (t - t_mean) + d * box. Vectorised: the box
+    covers a run of consecutive points, so every sum it needs is a difference
+    of two cumulative sums. slope=False fixes b = 0 (a flat baseline).
+    Returns (chi2, mid, dur, a, b, d) or None."""
+    x = (t - t.mean()) if slope else np.zeros_like(t)
+    n = len(t)
+    cx = np.concatenate([[0.0], np.cumsum(x)])
+    cv = np.concatenate([[0.0], np.cumsum(v)])
+    sx, sxx, sv, sxv, svv = x.sum(), x @ x, v.sum(), x @ v, v @ v
+    if not slope:
+        sxx = 1.0        # decouples b, which then solves to exactly 0
+    i0 = np.searchsorted(t, mids - durs / 2, "left")
+    i1 = np.searchsorted(t, mids + durs / 2, "right")
+    n_in = (i1 - i0).astype(float)
+    ok = (n_in >= min_points) & (n - n_in >= 2 * min_points)
+    if not ok.any():
+        return None
+    i0, i1, n_in, mids, durs = i0[ok], i1[ok], n_in[ok], mids[ok], durs[ok]
+    xin = cx[i1] - cx[i0]
+    vin = cv[i1] - cv[i0]
+    A = np.empty((len(n_in), 3, 3))
+    A[:, 0, 0] = n
+    A[:, 0, 1] = A[:, 1, 0] = sx
+    A[:, 0, 2] = A[:, 2, 0] = n_in
+    A[:, 1, 1] = sxx
+    A[:, 1, 2] = A[:, 2, 1] = xin
+    A[:, 2, 2] = n_in
+    B = np.stack([np.full_like(n_in, sv), np.full_like(n_in, sxv), vin], axis=1)
+    det = np.linalg.det(A)
+    good = np.abs(det) > 1e-12 * np.abs(A).max(axis=(1, 2)) ** 3
+    if not good.any():
+        return None
+    coef = np.full_like(B, np.nan)
+    coef[good] = np.linalg.solve(A[good], B[good][..., None])[..., 0]
+    chi = svv - np.einsum("ij,ij->i", coef, B)
+    chi[~good | ~(coef[:, 2] > 0)] = np.inf
+    k = int(np.argmin(chi))
+    if not np.isfinite(chi[k]):
+        return None
+    return (float(chi[k]), float(mids[k]), float(durs[k]),
+            float(coef[k, 0]), float(coef[k, 1]), float(coef[k, 2]))
 
-    Not max minus min: that is decided by exactly two points, so one bad frame
-    at each end sets the answer. On this same AC Cnc night the peak-to-peak
-    depth moved by 0.22 mag between two runs of the same data purely from a
-    different aperture, and it broke the colour ordering that had looked like
-    a physical result.
 
-    Instead: the baseline is the median of the brighter half of the points -
-    a star spends most of a run out of eclipse - and the bottom is the median
-    of the faintest tenth. Both are medians over many points, so neither moves
-    when one frame misbehaves."""
-    v = df["mag_comp_minus_target"].to_numpy(float) if "mag_comp_minus_target" in df else np.array([])
-    v = v[np.isfinite(v)]
-    if len(v) < 10:
-        return float("nan")
-    n_faint = max(3, int(round(faint_frac * len(v))))
-    order = np.sort(v)                     # larger value = target fainter
-    bottom = float(np.median(order[-n_faint:]))
-    baseline = float(np.median(order[: len(order) // 2]))
-    return bottom - baseline
+def _box_search(t, v, min_points, slope=True):
+    """Coarse grid over mid-time and duration, then a finer one around the best."""
+    span = t[-1] - t[0]
+    cad = float(np.median(np.diff(t)))
+    mids, durs = [], []
+    for dur in np.unique(np.clip(np.geomspace(max(min_points * cad, span / 40),
+                                              0.8 * span, 24), None, 0.8 * span)):
+        m = np.arange(t[0] - dur / 2 + cad, t[-1] + dur / 2 - cad, max(cad, dur / 20))
+        mids.append(m)
+        durs.append(np.full_like(m, dur))
+    best = _box_scan(t, v, np.concatenate(mids), np.concatenate(durs), min_points, slope)
+    if best is None:
+        return None
+    _chi, mid0, dur0 = best[:3]
+    mids, durs = [], []
+    for dur in np.linspace(0.8 * dur0, 1.2 * dur0, 17):
+        m = np.arange(mid0 - dur0 / 8, mid0 + dur0 / 8, max(cad / 4, dur0 / 400))
+        mids.append(m)
+        durs.append(np.full_like(m, dur))
+    fine = _box_scan(t, v, np.concatenate(mids), np.concatenate(durs), min_points, slope)
+    return fine if fine is not None and fine[0] < best[0] else best
+
+
+def fit_dip(df, min_points=5, n_shifts=50):
+    """Depth, mid-time and duration of a dip, from a box fitted on a straight
+    baseline, with uncertainties.
+
+    The model is  m(t) = a + b (t - t_mean) + d * box(t; t_mid, duration),
+    fitted by least squares over a grid of t_mid and duration, and the box that
+    lowers the residuals most is kept. The straight baseline takes up the slow
+    drift that airmass leaves even in a differential curve.
+
+    The uncertainties come from the data, by the "prayer bead" method used in
+    transit work: the residuals around the best model are shifted cyclically
+    along the curve, added back to the model, and the whole search is run
+    again, up to `n_shifts` times. The spread of the depths and mid-times
+    found is the uncertainty. It keeps correlated noise (a slow wander from
+    seeing or transparency) correlated, and it includes the cases where the
+    noise moves the box somewhere else altogether - which an error taken
+    from the curvature at the best point does not see, and which at a depth
+    close to the noise is the main uncertainty in the mid-time.
+
+    This replaces "median of the faintest tenth minus median of the brighter
+    half", which measures the noise as well as the dip: on a flat curve with
+    nothing in it, that difference is 2.3 times the noise, and it is never
+    zero. It also had the sign backwards (see below).
+
+    Returns a dict: depth and depth_err (mag, positive = fainter), t_mid and
+    t_mid_err (the time column used, days), duration and duration_err
+    (minutes), n_in (points inside the box), significance (depth /
+    depth_err), time_col, and 'partial' when the box runs off the start or
+    the end of the observation (the depth is then a lower limit and the
+    mid-time is not determined).
+    """
+    out = dict(depth=np.nan, depth_err=np.nan, t_mid=np.nan, t_mid_err=np.nan,
+               duration=np.nan, duration_err=np.nan, n_in=0,
+               significance=np.nan, time_col="", partial="")
+    if "mag_comp_minus_target" not in df:
+        return out
+    tcol = ("bjd_tdb" if "bjd_tdb" in df and df["bjd_tdb"].notna().sum() >= 10
+            else "jd")
+    if tcol not in df:
+        return out
+    t = df[tcol].to_numpy(float)
+    # The engine stores comparisons MINUS variable, so a dip in the target is
+    # a DROP in that column. Turned round here to variable minus comparisons:
+    # larger = target fainter, and a dip has a positive depth.
+    v = -df["mag_comp_minus_target"].to_numpy(float)
+    ok = np.isfinite(t) & np.isfinite(v)
+    t, v = t[ok], v[ok]
+    if len(t) < 3 * min_points:
+        return out
+    order = np.argsort(t)
+    t, v = t[order], v[order]
+    out["time_col"] = tcol
+    if t[-1] - t[0] <= 0:
+        return out
+    cad = float(np.median(np.diff(t)))
+
+    best = _box_search(t, v, min_points)
+    if best is None:
+        return out
+    # A sloped baseline needs baseline frames on BOTH sides of the dip. With
+    # frames on one side only - an observation that starts or ends inside
+    # the eclipse - the slope is extrapolated across the dip with nothing to
+    # hold it, and it eats the depth (RW Tri, 2026-10-02: 1.09 mag reported
+    # for an eclipse 1.8 mag deep). There the baseline is kept flat.
+    one_sided = ""
+    _mid, _dur = best[1], best[2]
+    n_before = int((t < _mid - _dur / 2).sum())
+    n_after = int((t > _mid + _dur / 2).sum())
+    slope = min(n_before, n_after) >= min_points
+    if not slope:
+        one_sided = ("no baseline before the dip" if n_before < min_points
+                     else "no baseline after the dip")
+        flat = _box_search(t, v, min_points, slope=False)
+        if flat is not None:
+            best = flat
+    chi, mid, dur, a, b, depth = best
+    inbox = np.abs(t - mid) <= dur / 2
+    model = a + b * (t - t.mean()) + depth * inbox
+    resid = v - model
+
+    # formal depth error, from the scatter of the residuals
+    X = np.column_stack([np.ones_like(t), t - t.mean(), inbox.astype(float)])
+    sigma2 = chi / max(len(t) - 5, 1)
+    depth_err = float(np.sqrt(sigma2 * np.linalg.inv(X.T @ X)[2, 2]))
+
+    # prayer bead
+    shifts = np.unique(np.linspace(1, len(t) - 1, min(n_shifts, len(t) - 1)).astype(int))
+    bd, bm, bw = [], [], []
+    for s in shifts:
+        r = _box_search(t, model + np.roll(resid, s), min_points, slope)
+        if r is not None:
+            bd.append(r[5])
+            bm.append(r[1])
+            bw.append(r[2])
+    # A box edge can only sit between two frames, so the mid-time is never
+    # known better than about half a cadence; at high signal the shifted
+    # residuals all land the box on the same frames and their spread
+    # alone would claim more.
+    mid_err = cad / 2.0
+    dur_err = np.nan
+    if len(bd) >= 10:
+        depth_err = max(depth_err, float(np.std(bd)))
+        mid_err = max(mid_err, float(np.std(bm)))
+        dur_err = float(np.std(bw)) * 1440.0
+
+    # Deepest point: the baseline taken off, a running median of 3 frames,
+    # its maximum inside the box. For a V-shaped eclipse the box depth is the
+    # mean dimming over the eclipse and this is the minimum. Its error uses
+    # the frame-to-frame noise (from neighbouring differences), not the box
+    # residuals, which on a V shape are mostly the shape itself.
+    # The baseline for it comes from frames well clear of the box (more than
+    # one box length from the middle): a V-shaped eclipse has wings outside
+    # the box, which lift the box fit's own baseline.
+    far = np.abs(t - mid) > dur
+    far_both = (far & (t < mid)).sum() >= min_points and (far & (t > mid)).sum() >= min_points
+    if far_both:
+        bb, aa = np.polyfit(t[far] - t.mean(), v[far], 1)
+    elif far.sum() >= min_points:
+        # frames clear of the dip on one side only: a slope through them
+        # would be extrapolated across the dip, so a flat level is used
+        aa, bb = float(np.median(v[far])), 0.0
+    else:
+        aa, bb = a, b
+    y = v - (aa + bb * (t - t.mean()))
+    k = 1
+    sm = np.array([np.median(y[max(0, i - k):i + k + 1]) for i in range(len(y))])
+    depth_min = float(np.max(sm[inbox])) if inbox.any() else np.nan
+    # second differences: a steady slope (ingress, egress) drops out of them
+    d2 = y[2:] - 2 * y[1:-1] + y[:-2]
+    s_pt = 1.4826 * np.median(np.abs(d2 - np.median(d2))) / np.sqrt(6.0)
+    depth_min_err = float(1.25 * s_pt / np.sqrt(2 * k + 1))
+
+    # Does the observation start or end inside the dip? Then the first (or
+    # last) frames sit well below the level the star returns to, and the box
+    # - which takes its baseline from whatever lies outside it - has no true
+    # baseline on that side. On RW Tri the run starts 0.27 mag down on the
+    # ingress, and the box put its edge on the ingress itself.
+    edge_note = ""
+    if far.sum() >= min_points and np.isfinite(s_pt) and s_pt > 0:
+        lim = max(5.0 * s_pt, 0.05 * max(depth_min, 0.0))
+        if np.median(y[:3]) > lim:
+            edge_note = "starts inside the dip"
+        elif np.median(y[-3:]) > lim:
+            edge_note = "ends inside the dip"
+
+    partial = ""
+    if mid - dur / 2 < t[0] + cad / 2:
+        partial = "starts before the first frame"
+    elif mid + dur / 2 > t[-1] - cad / 2:
+        partial = "ends after the last frame"
+    elif edge_note:
+        partial = edge_note
+    out.update(depth=float(depth), depth_err=depth_err, t_mid=float(mid),
+               t_mid_err=float(mid_err), duration=float(dur * 1440.0),
+               duration_err=dur_err, n_in=int(inbox.sum()), one_sided=one_sided,
+               depth_min=depth_min, depth_min_err=depth_min_err,
+               significance=depth / depth_err if depth_err > 0 else np.nan,
+               partial=partial)
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -3109,8 +3612,13 @@ def write_lightcurve_sheet(df, config, out_path, target_name, channel,
     cols = {}
     if "elapsed_min" in df.columns:
         cols["Time_minutes"] = df["elapsed_min"]
-    if "jd" in df.columns:
-        cols["BJD"] = df["jd"]
+    # The time a transit is published in: BJD_TDB at mid-exposure. When the
+    # target's coordinates were not in the header it cannot be computed, and
+    # the column says what it holds instead of claiming to be BJD.
+    if "bjd_tdb" in df.columns and df["bjd_tdb"].notna().any():
+        cols["BJD_TDB"] = df["bjd_tdb"]
+    elif "jd" in df.columns:
+        cols["JD_UTC_mid"] = df["jd"]
     if "mag_comp_minus_target" in df.columns:
         # Named for exactly what it is. It was called "Magnitude", and that
         # was read as the star's own magnitude - so the column everyone
@@ -3325,11 +3833,26 @@ measurement noise (mmag)  How much the comparison stars move against each other,
 target variation (mmag)   How much the target actually moved. On a constant star
                           this will be the size of the noise; on a variable star
                           it is the real change.
-eclipse depth (mag)       How deep the star went. The baseline is the median of
-                          the brighter half of the points, and the bottom is the
-                          median of the faintest tenth - both are medians over
-                          many points, so one outlying point does not move them.
-                          Not the difference between the two extreme points.
+eclipse depth (mag)       How deep the star went, from a box fitted on a straight
+                          baseline: the box that lowers the residuals most, its
+                          depth, mid-time and length. The errors come from the
+                          data: the residuals are shifted along the curve, added
+                          back to the model and the fit is repeated ("prayer
+                          bead"), so slow correlated noise counts in full.
+                          Positive depth = the target got fainter.
+                          Below 5 sigma it is reported
+                          as no significant dip - a search over all positions
+                          and lengths finds 3 to 4 sigma in pure noise. For a
+                          V-shaped eclipse the box gives the mean dimming over
+                          the eclipse, less than the deepest point; the
+                          deepest point (running median of 3 frames) is
+                          then given as well.
+                          The mid-time is BJD_TDB, mid-exposure, when the
+                          header has the target's coordinates.
+                          (Before: median of the faintest tenth minus median of
+                          the brighter half, taken with the sign reversed - it
+                          measured the brightest points, not the faintest - and
+                          on a flat curve 2.3 times the noise, never zero.)
 variation vs comparison   The single number that says whether there is anything
                           here. How much smooth change there is in the target's
                           curve, against how much smooth change there is in the
@@ -3378,12 +3901,70 @@ reliability               RELIABLE = the two methods agree. CHECK = they do not,
 """
 
 
-def write_summary(rows, out_dir, dropped_all):
-    csv_path = os.path.join(out_dir, "SUMMARY.csv")
+def _dip_cells(d):
+    """The fitted dip as CSV cells: error, significance, mid-time, its error,
+    duration."""
+    def f(x, fmt):
+        return format(x, fmt) if x is not None and np.isfinite(x) else "-"
+    partial = bool(d.get("partial") or d.get("one_sided"))
+    when = "-" if partial else f(d.get("t_mid", np.nan), ".5f")
+    if when != "-":
+        when += " " + ("BJD_TDB" if d.get("time_col") == "bjd_tdb" else "JD_UTC")
+    return [f(d.get("depth_err", np.nan), ".4f"), f(d.get("significance", np.nan), ".1f"),
+            when, "-" if partial else f(d.get("t_mid_err", np.nan) * 1440.0, ".1f"),
+            "-" if partial else f(d.get("duration", np.nan), ".0f"),
+            f(d.get("depth_min", np.nan), ".4f")]
+
+
+def _dip_text(d, depth):
+    """The fitted dip in one phrase for SUMMARY.txt."""
+    if depth is None or not np.isfinite(depth) or not d:
+        return "no dip fitted"
+    err, sig = d.get("depth_err", np.nan), d.get("significance", np.nan)
+    if not np.isfinite(sig) or sig < 5.0:
+        return (f"no significant dip: best box {depth:.4f} +/- {err:.4f} mag, "
+                f"{sig:.1f} sigma, below 5")
+    tc = "BJD_TDB" if d.get("time_col") == "bjd_tdb" else "JD_UTC"
+    if d.get("one_sided") and not d.get("partial"):
+        # The dip was not seen from both sides, so neither its start or end
+        # nor its middle is measured; the depth is against the one side seen.
+        dm = d.get("depth_min", np.nan)
+        txt = (f"dip {depth:.4f} +/- {err:.4f} mag ({sig:.0f} sigma) - "
+               f"{d['one_sided']}, so the box depth is against the frames on "
+               f"one side only and the mid-time is not determined")
+        if np.isfinite(dm):
+            txt += f"; deepest point {dm:.4f} +/- {d['depth_min_err']:.4f} mag"
+        return txt
+    if d.get("partial"):
+        # the box runs off the observation: neither its middle nor its
+        # length is measured, so no number is given for them
+        txt = (f"dip {depth:.4f} +/- {err:.4f} mag ({sig:.0f} sigma) - it "
+               f"{d['partial']}, so the depth is a lower limit and the "
+               f"mid-time is not determined")
+        dm = d.get("depth_min", np.nan)
+        if np.isfinite(dm) and dm > depth:
+            txt += (f"; deepest point {dm:.4f} +/- {d['depth_min_err']:.4f} mag, "
+                    f"against the level the star returns to")
+        return txt
+    txt = (f"dip {depth:.4f} +/- {err:.4f} mag ({sig:.0f} sigma), mid {tc} "
+           f"{d['t_mid']:.5f} +/- {d['t_mid_err'] * 1440.0:.1f} min, "
+           f"lasting {d['duration']:.0f} min")
+    dm = d.get("depth_min", np.nan)
+    if np.isfinite(dm) and dm - depth > 4 * max(d.get("depth_min_err", 0.0), err):
+        # worth saying only when the curve is clearly V-shaped
+        txt += f"; deepest point {dm:.4f} +/- {d['depth_min_err']:.4f} mag"
+    return txt
+
+
+def write_summary(rows, out_dir, dropped_all, stem="SUMMARY"):
+    csv_path = os.path.join(out_dir, stem + ".csv")
     with open(csv_path, "w", newline="", encoding="utf-8-sig") as fh:
         wr = csv.writer(fh)
         wr.writerow(["target", "channel", "measurement noise (mmag)",
                      "target variation (mmag)", "eclipse depth (mag)",
+                     "depth error (mag)", "dip significance (sigma)",
+                     "mid-time", "mid-time error (min)", "duration (min)",
+                     "deepest point (mag)",
                      "variation vs comparison", "frames", "comparison stars",
                      "position gap (pixels)", "curve gap (mmag)",
                      "reliability", "notes"])
@@ -3391,17 +3972,17 @@ def write_summary(rows, out_dir, dropped_all):
             wr.writerow([r["target"], r["channel"],
                          f"{r['noise']:.1f}" if np.isfinite(r["noise"]) else "-",
                          f"{r['scatter']:.1f}",
-                         f"{r['rng']:.3f}" if np.isfinite(r["rng"]) else "-",
+                         f"{r['rng']:.4f}" if np.isfinite(r["rng"]) else "-",
+                         *_dip_cells(r.get("dip") or {}),
                          f"{r['snr']:.1f}" if np.isfinite(r["snr"]) else "-",
                          f"{r['n_used']}/{r['n_frames']}", r["n_comps"],
                          f"{r['pos_max']:.2f}" if np.isfinite(r["pos_max"]) else "-",
                          f"{r['curve']:.1f}" if np.isfinite(r["curve"]) else "-",
                          "RELIABLE" if r["ok"] else "CHECK", r["note"]])
-        wr.writerow([])
-        for line in SUMMARY_LEGEND.strip().splitlines():
-            wr.writerow([line])
+        # The legend is in SUMMARY.txt. Written here it became a column of
+        # loose rows under the table, which breaks it as a table.
 
-    txt_path = os.path.join(out_dir, "SUMMARY.txt")
+    txt_path = os.path.join(out_dir, stem + ".txt")
     with open(txt_path, "w", encoding="utf-8") as fh:
         fh.write("Observation summary\n" + "=" * 70 + "\n\n")
         cur = None
@@ -3410,11 +3991,11 @@ def write_summary(rows, out_dir, dropped_all):
                 cur = r["target"]
                 fh.write(f"\n{cur}\n" + "-" * 70 + "\n")
             nz = f"{r['noise']:.1f}" if np.isfinite(r["noise"]) else "-"
-            rg = f"{r['rng']:.3f}" if np.isfinite(r["rng"]) else "-"
+            rg = _dip_text(r.get("dip") or {}, r["rng"])
             sn = f"{r['snr']:.1f}" if np.isfinite(r["snr"]) else "-"
             fh.write(f"  channel {r['channel']}:  noise {nz} mmag  |  "
                      f"target variation {r['scatter']:.1f} mmag "
-                     f"(depth {rg} mag)  |  "
+                     f"({rg})  |  "
                      f"variation vs comparison {sn}  |  "
                      f"frames {r['n_used']}/{r['n_frames']}  |  "
                      f"{r['n_comps']} comparison stars  |  "
@@ -3963,7 +4544,7 @@ def reselect_from_measurements(out_root, ask=True, comps=None, exclude=None):
     if not files:
         print(f"  no measurements found in {details}")
         return False
-    target = os.path.basename(out_root).replace("Output_", "")
+    target = _RUN_STAMP.sub("", os.path.basename(os.path.normpath(out_root))).replace("Output_", "", 1)
 
     tables = {}
     for f in files:
@@ -4257,6 +4838,13 @@ def choose_radii(frames, stars, cfg, n_sample=9, verbose=True):
 # measurement
 # --------------------------------------------------------------------------
 
+def apply_saturation_quiet(df, names, target_name, max_frac=0.02):
+    """apply_saturation without the printout."""
+    import contextlib, io
+    with contextlib.redirect_stdout(io.StringIO()):
+        return apply_saturation(df, names, target_name, max_frac)
+
+
 def _finish(rows, names, cfg, route):
     """Ensemble and quality gates - the same ones the Kinneret script uses."""
     df = pd.DataFrame(rows)
@@ -4267,11 +4855,18 @@ def _finish(rows, names, cfg, route):
     df["elapsed_min"] = (df["jd"] - t0) * 1440.0 if np.isfinite(t0) else np.nan
 
     comps = names[1:]
+    if route == "wcs":
+        sat_dropped = apply_saturation(df, names, target_name)
+    else:
+        # the same pixels as the wcs route: report once, act on both
+        sat_dropped = apply_saturation_quiet(df, names, target_name)
+    comps = [c for c in comps if c not in sat_dropped]
     df = recompute_ensemble(df, target_name, comps)
 
     config = dict(cfg)
     config.setdefault("per_star_fwhm", {n: cfg["median_fwhm"] for n in names})
     config.update(target_name=target_name, chosen_comps=comps, route=route,
+                  saturated_comps=sat_dropped,
                   anchor_name=names[1] if len(names) > 1 else target_name,
                   final_comps=list(comps), comp_stability={}, comp_drift={},
                   comp_tail_offset={}, comp_completeness={},
@@ -4384,6 +4979,7 @@ def measure(frames, stars, ref_idx, cfg):
     for fr in frames:
         img = read_image(fr["path"])
         h = fr["header"]
+        sat_lvl = frame_saturation_level(h, img)
         cat = read_catalogue(fr["path"])
         w = WCS(h)
         px, py = w.all_world2pix(sky[0], sky[1], 0)
@@ -4391,7 +4987,8 @@ def measure(frames, stars, ref_idx, cfg):
                         np.atleast_1d(py).astype(float)))
 
         base = {"file": os.path.basename(fr["path"]),
-                "jd": get_obs_time_jd(h, fr["path"]),
+                "jd": (_jd := get_obs_time_jd(h, fr["path"])),
+               "bjd_tdb": bjd_tdb(_jd, h),
                 "airmass": float(h.get("AIRMASS", np.nan)),
                 "l1fwhm_px": float(h.get("L1FWHM", np.nan)) /
                              float(h.get("PIXSCALE", 1.0) or 1.0),
@@ -4485,6 +5082,11 @@ def measure(frames, stars, ref_idx, cfg):
                     img, xr, yr, r_ap, r_in, r_out,
                     gain=cfg["gain"], ron=cfg["ron"], dark=cfg["dark"])
                 good = bool(ok and np.isfinite(flux) and flux > 0)
+                pk = aperture_peak(img, xr, yr, r_ap)
+                row[f"{name}_peak"] = pk
+                row[f"{name}_sat"] = bool(np.isfinite(pk) and pk >= sat_lvl)
+                if row[f"{name}_sat"]:
+                    good = False
                 if pair_drop and name == target_name:
                     good = False
                 row[f"{name}_fwhm"] = float(wv) if np.isfinite(wv) else np.nan
@@ -4591,8 +5193,8 @@ def main():
     # switch - the per-comparison-star plots only exist once a run is over, so
     # the useful moment to choose is exactly here.
     _roots = sorted(glob.glob(os.path.join(args.output_dir, "Output_*")))
-    _roots = [r for r in _roots
-              if glob.glob(os.path.join(r, "Details", "*_wcs.csv"))]
+    _roots = latest_runs([r for r in _roots
+              if glob.glob(os.path.join(r, "Details", "*_wcs.csv"))])
     if _roots and not args.no_ask_comps:
         if args.reselect:
             _ans = "y"
@@ -4677,7 +5279,9 @@ def main():
             continue
 
         print(f"\n{tname}  -  {len(keep)} frames")
-        tdir = os.path.join(args.output_dir, "Output_" + safe_name(tname))
+        # A new folder when this target was already measured here, so the
+        # earlier run's results stay as they were.
+        tdir = new_run_dir(os.path.join(args.output_dir, "Output_" + safe_name(tname)))
         os.makedirs(tdir, exist_ok=True)
         target_dirs[tname] = tdir
 
@@ -4850,14 +5454,15 @@ def main():
 
         cmp_ = compare_routes(df_w, df_c, list(stars.name), limits)
         sc = scatter_mmag(df_w)
-        rng = target_depth_mag(df_w)
+        dip = fit_dip(df_w)
+        rng = dip["depth"]
         cr, r_t, r_c, n_c = change_ratio(df_w, cfg_w.get("final_comps", []))
         note = note_src
         for extra in (over_note, radii_note):
             if extra:
                 note = (note + "; " if note else "") + extra
         summary.append(dict(target=tname, channel=cname, scatter=sc, noise=noise,
-                            rng=rng, snr=cr, n_used=cmp_.get("n_frames_wcs", 0),
+                            rng=rng, dip=dip, snr=cr, n_used=cmp_.get("n_frames_wcs", 0),
                             n_frames=len(keep),
                             n_comps=len(cfg_w.get("final_comps", [])),
                             pos_max=cmp_["pos_max"], curve=cmp_["curve_mmag"],
@@ -4866,7 +5471,16 @@ def main():
 
     if not summary:
         raise SystemExit("Nothing was measured.")
-    write_summary(summary, args.output_dir, dropped_all)
+    # Each target's summary lives with that target's results, in its own run
+    # folder, so a second run does not overwrite the first one's. A combined
+    # one goes above them only when there is more than one target.
+    for tname, tdir in target_dirs.items():
+        rows_t = [r for r in summary if r["target"] == tname]
+        if rows_t:
+            write_summary(rows_t, tdir, [d for d in dropped_all if d[0] == tname])
+    if len(target_dirs) > 1:
+        write_summary(summary, args.output_dir, dropped_all,
+                      stem=_summary_stem(args.output_dir))
     print("")
     for tname, tdir in sorted(target_dirs.items()):
         try:

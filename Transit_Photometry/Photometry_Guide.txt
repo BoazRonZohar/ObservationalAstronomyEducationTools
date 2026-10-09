@@ -12,8 +12,9 @@ That is all. The script asks you for everything it needs:
     frames folder           (the original colour frames, unprocessed)
     output folder
     choose the aperture and sky ring automatically?   Enter = yes
-    camera gain             Enter
-    camera RON              Enter
+    camera gain             Enter   (the value from the header, EGAIN, when
+                                     there is one; it says so)
+    camera RON              Enter   (RDNOISE from the header when there is one)
 
 At the end of every run it prints a table of the comparison stars — how bright
 each one is and how much it scattered — and leaves the same table in the output
@@ -46,7 +47,9 @@ What the script does
 7. Measures every channel by two different positioning methods and compares
    the two.
 8. Writes everything to a folder called Output_<star name>, and prints the
-   comparison-star table.
+   comparison-star table. If that folder is already there from an earlier
+   run, the new run goes to Output_<star name>_<date>_<time> and the earlier
+   one is left as it was.
 
 
 What you get
@@ -55,7 +58,8 @@ What you get
 Inside Output_<star name>:
 
     SUMMARY.txt              <- read this. The summary and the legend.
-    SUMMARY.csv                the same, for Excel
+    SUMMARY.csv                the same table, for Excel (the legend is in
+                               SUMMARY.txt)
     comparison_stars.txt     <- how each comparison star behaved. Read this
                                 before choosing stars yourself.
     G_wcs_light_curve.png      the light curve
@@ -89,7 +93,27 @@ How to read the summary
 
     target variation        How much the target actually moved.
 
-    eclipse depth           The depth of the eclipse, in magnitudes.
+    eclipse depth           The depth of the dip, in magnitudes, with its
+                            error, its significance, the mid-time and the
+                            length. A box is fitted on a straight baseline.
+                            Below 5 sigma it says "no significant dip": a
+                            search over every position and length finds 3 to
+                            4 sigma in pure noise, so a smaller number is not
+                            evidence of anything. When the box runs off the
+                            start or the end of the night, the depth is a
+                            lower limit and the mid-time is not determined.
+                            For a V-shaped eclipse the box gives the mean
+                            dimming, less than the deepest point.
+
+    times                   Every time is the MIDDLE of the exposure. In the
+                            light-curve spreadsheet and in the summary it is
+                            BJD_TDB - the time at the centre of mass of the
+                            solar system, the one ephemerides use - computed
+                            from the site and the target coordinates in the
+                            header. Without coordinates in the header the
+                            column is JD_UTC_mid instead, and says so.
+                            (Before this version the column called BJD was
+                            plain JD, and up to half an exposure early.)
 
     variation vs comparison The single number that tells you whether there is
                             anything here.
@@ -132,11 +156,26 @@ How to read the summary
     Worth reading.
 
 
+Saturation
+----------
+
+Every star is checked in every frame: its highest pixel against the level the
+header gives (MAXLIN, then SATURATE) or, without either, the level where the
+frame's pixels pile up at the top of the converter. A comparison star
+saturated in more than 2% of the frames is taken out of the ensemble, and the
+script prints which. Frames where the target itself is saturated are left out
+of the light curve and counted.
+
+That catches the clipped centres. It does not catch a star that is below the
+clipping level but already outside the camera's linear range, so the table
+below still matters.
+
+
 Choosing the comparison stars yourself
 --------------------------------------
 
 The script chooses the comparison stars by how steady they stayed over the
-night. That is a good test, but it cannot see saturation. On a night when the
+night. That is a good test, but on its own it cannot see saturation. On a night when the
 exposure was too long, the brightest stars in the field have their centres
 clipped flat, and how much light is clipped changes from frame to frame with
 the seeing. Those stars look steady over hours and add noise from one frame to
