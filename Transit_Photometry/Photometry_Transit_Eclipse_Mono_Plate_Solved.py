@@ -3631,6 +3631,79 @@ def fit_dip(df, min_points=5, n_shifts=50):
 # plots
 # --------------------------------------------------------------------------
 
+VARASTRO_CHART_LIMIT = 1_500_000      # bytes; VarAstro refuses a larger image
+
+
+def _file_safe(text):
+    """A star or filter name made safe for a file name: 'RW Tri' -> 'RW_Tri'."""
+    s = re.sub(r"[^A-Za-z0-9.+-]+", "_", str(text)).strip("_")
+    return s or "target"
+
+
+def write_varastro(df, out_dir, target_name, channel, measured_noise=None,
+                   suffix=""):
+    """The light curve as VarAstro takes it: plain text, no header line, three
+    columns - BJD_TDB, variable minus comparison ensemble (mag), its error.
+
+    Named <star>_<date>_<filter>_BJD_TDB.txt, the date being the UTC date of
+    the first frame. The time is BJD_TDB only: when the target's coordinates
+    were not in the header it could not be computed, and the file is not
+    written rather than carry JD_UTC under a BJD name. The error is the one
+    on the plot and in the spreadsheet - the larger of the formal error and
+    the noise measured on the comparison stars."""
+    if "bjd_tdb" not in df.columns or not df["bjd_tdb"].notna().any():
+        print("    VarAstro file not written: no BJD_TDB (target coordinates "
+              "missing from the header)")
+        return None
+    t = df["bjd_tdb"].to_numpy(float)
+    y = -df["mag_comp_minus_target"].to_numpy(float)
+    err = (df["mag_comp_minus_target_err"].to_numpy(float)
+           if "mag_comp_minus_target_err" in df.columns else np.full(len(df), np.nan))
+    if measured_noise is not None and np.isfinite(measured_noise):
+        err = np.maximum(np.nan_to_num(err, nan=0.0), measured_noise / 1000.0)
+    ok = np.isfinite(t) & np.isfinite(y) & np.isfinite(err)
+    if not ok.any():
+        return None
+    jd0 = (df["jd"].to_numpy(float) if "jd" in df.columns else t)
+    jd0 = float(np.nanmin(jd0[np.isfinite(jd0)])) if np.isfinite(jd0).any() else float(np.nanmin(t))
+    import datetime
+    day = (datetime.datetime(2000, 1, 1, 12) +
+           datetime.timedelta(days=jd0 - 2451545.0)).strftime("%Y-%m-%d")
+    name = (f"{_file_safe(target_name)}_{day}_{_file_safe(channel)}{suffix}"
+            f"_BJD_TDB.txt")
+    path = os.path.join(out_dir, name)
+    order = np.argsort(t[ok])
+    with open(path, "w", encoding="ascii", newline="\n") as fh:
+        for a, b, c in zip(t[ok][order], y[ok][order], err[ok][order]):
+            fh.write(f"{a:.6f} {b:.5f} {c:.5f}\n")
+    return path
+
+
+def varastro_chart(src, limit=VARASTRO_CHART_LIMIT):
+    """A copy of the star chart under VarAstro's 1.5 MB limit, beside it.
+
+    The chart is saved as RGBA and comes out near 2 MB. Dropping the alpha
+    channel and keeping a 256-colour palette halves it; the chart is a grey
+    image with a few coloured labels, so the labels stay sharp. The palette
+    is chosen by coverage, not median cut: median cut spends its colours on
+    the greys and turned the red target circle brown (213,46,47 -> 123,93,94
+    on a test chart). If it is still too large the picture is scaled down
+    until it fits."""
+    from PIL import Image
+    dst = os.path.splitext(src)[0] + "_VarAstro.png"
+    img = Image.open(src).convert("RGB")
+    scale = 1.0
+    while True:
+        im = img if scale == 1.0 else img.resize(
+            (max(1, int(img.width * scale)), max(1, int(img.height * scale))),
+            Image.LANCZOS)
+        method = getattr(Image, "Quantize", Image).MAXCOVERAGE    # older Pillow: Image.MAXCOVERAGE
+        im.quantize(colors=256, method=method).save(dst, optimize=True)
+        if os.path.getsize(dst) <= limit or scale < 0.3:
+            return dst
+        scale *= 0.85
+
+
 def write_lightcurve_sheet(df, config, out_path, target_name, channel,
                            measured_noise=None):
     """A small spreadsheet holding just the light curve, ready to plot.
@@ -4671,6 +4744,11 @@ def reselect_from_measurements(out_root, ask=True, comps=None, exclude=None):
         except Exception as e:
             print(f"  {ch}: could not write the spreadsheet ({e})")
         try:
+            write_varastro(df, out_root, target, ch, measured_noise=noise,
+                           suffix="_reselected")
+        except Exception as e:
+            print(f"  {ch}: could not write the VarAstro file ({e})")
+        try:
             plot_channel(df, cfg, base,
                          f"{target}  -  channel {ch}  (comparison stars chosen by hand)",
                          measured_noise=noise, channel=ch)
@@ -5495,6 +5573,10 @@ def main():
                                      tname, cname, measured_noise=noise)
         except Exception as e:
             print(f"\n    could not write the light-curve sheet: {e}")
+        try:
+            write_varastro(df_w, tdir, tname, cname, measured_noise=noise)
+        except Exception as e:
+            print(f"\n    could not write the VarAstro file: {e}")
         plot_channel(df_w, cfg_w, base + "_wcs",
                        f"{tname}  -  filter {cname}  (positions from the plate solution)",
                        measured_noise=noise, comp_base=dbase + "_wcs")
@@ -5504,6 +5586,7 @@ def main():
         try:
             finder_chart(ref_img, stars, cfg_w, os.path.join(tdir, "stars_used.png"),
                            tname, cname, note=blend_note)
+            varastro_chart(os.path.join(tdir, "stars_used.png"))
         except Exception as e:
             print(f"\n    could not draw the star chart: {e}")
 

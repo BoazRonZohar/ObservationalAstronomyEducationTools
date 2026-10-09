@@ -296,6 +296,51 @@ def _target_radec_of(header):
     return None
 
 
+def _file_safe(text):
+    """A star or filter name made safe for a file name: 'RW Tri' -> 'RW_Tri'."""
+    s = re.sub(r"[^A-Za-z0-9.+-]+", "_", str(text)).strip("_")
+    return s or "target"
+
+
+def write_varastro(df, out_dir, target_name, channel, measured_noise=None,
+                   suffix=""):
+    """The light curve as VarAstro takes it: plain text, no header line, three
+    columns - BJD_TDB, variable minus comparison ensemble (mag), its error.
+
+    Named <star>_<date>_<filter>_BJD_TDB.txt, the date being the UTC date of
+    the first frame. The time is BJD_TDB only: when the target's coordinates
+    were not in the header it could not be computed, and the file is not
+    written rather than carry JD_UTC under a BJD name. The error is the one
+    on the plot and in the spreadsheet - the larger of the formal error and
+    the noise measured on the comparison stars."""
+    if "bjd_tdb" not in df.columns or not df["bjd_tdb"].notna().any():
+        print("    VarAstro file not written: no BJD_TDB (target coordinates "
+              "missing from the header)")
+        return None
+    t = df["bjd_tdb"].to_numpy(float)
+    y = -df["mag_comp_minus_target"].to_numpy(float)
+    err = (df["mag_comp_minus_target_err"].to_numpy(float)
+           if "mag_comp_minus_target_err" in df.columns else np.full(len(df), np.nan))
+    if measured_noise is not None and np.isfinite(measured_noise):
+        err = np.maximum(np.nan_to_num(err, nan=0.0), measured_noise / 1000.0)
+    ok = np.isfinite(t) & np.isfinite(y) & np.isfinite(err)
+    if not ok.any():
+        return None
+    jd0 = (df["jd"].to_numpy(float) if "jd" in df.columns else t)
+    jd0 = float(np.nanmin(jd0[np.isfinite(jd0)])) if np.isfinite(jd0).any() else float(np.nanmin(t))
+    import datetime
+    day = (datetime.datetime(2000, 1, 1, 12) +
+           datetime.timedelta(days=jd0 - 2451545.0)).strftime("%Y-%m-%d")
+    name = (f"{_file_safe(target_name)}_{day}_{_file_safe(channel)}{suffix}"
+            f"_BJD_TDB.txt")
+    path = os.path.join(out_dir, name)
+    order = np.argsort(t[ok])
+    with open(path, "w", encoding="ascii", newline="\n") as fh:
+        for a, b, c in zip(t[ok][order], y[ok][order], err[ok][order]):
+            fh.write(f"{a:.6f} {b:.5f} {c:.5f}\n")
+    return path
+
+
 def jd_axis(frame):
     """Absolute time axis for the light curve: (x, label), or None.
 
@@ -2573,6 +2618,17 @@ def main():
     df, config = offer_recomparison(df, config, args)
 
     write_outputs(df, config, args.output, args.output_format.split(","))
+    # the VarAstro upload file goes beside the other outputs; star and filter
+    # come from the reference frame's header, the star list only says "V"
+    try:
+        h = fits.getheader(args.ref_file)
+        star = str(h.get("OBJECT", "")).strip() or config.get("target_name", "V")
+        filt = str(h.get("FILTER", "")).strip() or "unknown-filter"
+        p = write_varastro(df, os.path.dirname(os.path.abspath(args.output)), star, filt)
+        if p:
+            print(f"VarAstro file written to {p}")
+    except Exception as e:
+        print(f"could not write the VarAstro file: {e}")
 
     n_ok = df["diff_mag"].notna().sum()
     print(f"\nDone. {n_ok}/{len(df)} frames have a valid differential magnitude.")
