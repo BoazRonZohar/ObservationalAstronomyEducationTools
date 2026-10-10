@@ -1465,7 +1465,8 @@ def follow(frames, hours, cx, cy, psf_px, passes=3):
 
     Now each frame's box has the sky behind the object taken out first: the
     median of the same box in the frames where the object is somewhere else,
-    at least 2.5 star widths away. What a star contributes is the same in all
+    at least 2 star widths away (a frame that has no three such frames is not
+    used). What a star contributes is the same in all
     of them and cancels; the object does not, because it was elsewhere. Then
     the position is a Gaussian-weighted centroid starting from the predicted
     place, and a frame counts only if the object stands at least 3 sigma above
@@ -1492,8 +1493,13 @@ def follow(frames, hours, cx, cy, psf_px, passes=3):
             in_field += 1
             box = np.asarray(frames[k][yi - half:yi + half + 1,
                                        xi - half:xi + half + 1], float)
-            away = np.where(np.hypot(px_ - gxk, py_ - gyk) > 2.5 * psf_px)[0]
+            away = np.where(np.hypot(px_ - gxk, py_ - gyk) > 2.0 * psf_px)[0]
             sig_map = None
+            # Without at least three frames in which the object is elsewhere
+            # there is no empty sky to measure against, and whatever star sits
+            # in the box would be measured instead. Such a frame is not used.
+            if len(away) < 3:
+                continue
             if len(away) >= 3:
                 pick = away[np.linspace(0, len(away) - 1,
                                         min(12, len(away))).round().astype(int)]
@@ -1700,12 +1706,23 @@ def search_prepared(frames, mjds, det, psf_px=3.2, min_snr=8.0,
         moved_px = float(np.hypot(cx[0], cy[0]) * (t[-1] - t[0]))
         if rms_px <= 0 or moved_px / rms_px < min_significance:
             continue
-        # Less than one star width over the whole run is not a motion this
+        # Less than three star widths over the whole run is not a motion this
         # method can confirm: the "track" of a faint star measured at S/N 4
-        # wanders that far by itself. The triples already ask each PAIR to
-        # move this much; the final measurement now has to agree.
-        if moved_px < psf_px:
+        # wanders a star width by itself, and the centroid of a bright star
+        # drifted by 3 px over three hours of Kelt-16. Below three widths
+        # there is also no empty sky to measure the middle of the track
+        # against. On the 2011 Faulkes frames the known asteroid moves 7.
+        if moved_px < 3.0 * psf_px:
             continue
+        # A "track" that stays on a star the whole night is that star. On the
+        # Kelt-16 frames (RASA 11, 3 hours) the centroids of bright stars
+        # drifted by 3 px over the night and every such star came out as a
+        # mover at 2 arcsec/hour. A real object crosses a star now and then;
+        # it does not sit on one for most of the run.
+        if len(stat):
+            dd, _i = cKDTree(stat).query(np.c_[X, Y])
+            if float(np.median(dd)) < psf_px:
+                continue
         # Five times, not three. A comet is not a point: its centroid is
         # measured less precisely than a star's however good the frames are,
         # and at three times the stellar scatter the 2011 comet was thrown out
