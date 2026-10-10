@@ -477,29 +477,51 @@ def saturated_zones(img, level, psf_px):
     return np.array(zones) if zones else np.zeros((0, 3))
 
 
-def measure_psf(raw, rms_raw, level, guess):
-    """The stars' FWHM in pixels, measured on the frame itself.
+def measure_psf(raws, level, guess=3.2):
+    """The stars' FWHM in pixels, measured on the first frames themselves.
 
     It was a fixed 3.2 px - right for the Faulkes frames of 2011 and for no
     other telescope in particular. The width test below is a test AGAINST
     this number, so with a wrong one it either passes everything or rejects
-    the stars themselves."""
-    x, y, f = find_sources(raw, guess, 10.0 * rms_raw)
+    the stars themselves.
+
+    Only sources found again in another of the first frames count. A first
+    version measured everything bright in one frame, and on the 2011 Faulkes
+    frames - a sparse field, a 2 m telescope, 60 s - the cosmic rays
+    outnumbered the stars: it measured 1.10 px (0.33 arcsec) instead of about
+    3.2, the width test then threw the stars away with the rays, and the
+    known asteroid was not found. A cosmic ray is never in two frames. A hot
+    pixel is, so anything narrower than one pixel is left out as well.
+
+    `raws` is a list of (background-subtracted frame, its noise), all on the
+    reference grid, the first one being measured."""
+    raw0, rms0 = raws[0]
+    x, y, f = find_sources(raw0, guess, 10.0 * rms0)
     if len(x) == 0:
         return float("nan"), 0
+    if len(raws) > 1:
+        again = np.zeros(len(x), bool)
+        for r, rms in raws[1:]:
+            xo, yo, _f = find_sources(r, guess, 10.0 * rms)
+            if len(xo):
+                d, _i = cKDTree(np.c_[xo, yo]).query(np.c_[x, y])
+                again |= d <= 1.5
+        x, y, f = x[again], y[again], f[again]
+        if len(x) == 0:
+            return float("nan"), 0
     tree = cKDTree(np.c_[x, y])
     widths = []
     for i in np.argsort(-f)[:300]:
         if len(tree.query_ball_point((x[i], y[i]), 4.0 * guess)) > 1:
             continue                                   # a neighbour
         xi, yi = int(round(x[i])), int(round(y[i]))
-        if not (0 <= yi < raw.shape[0] and 0 <= xi < raw.shape[1]):
+        if not (0 <= yi < raw0.shape[0] and 0 <= xi < raw0.shape[1]):
             continue
-        pk = raw[yi, xi]
-        if pk < 20 * rms_raw or pk > 0.5 * level:
+        pk = raw0[yi, xi]
+        if pk < 20 * rms0 or pk > 0.5 * level:
             continue
-        sh = short_axis(raw, x[i], y[i], guess)
-        if sh is None or sh[1] <= 0:
+        sh = short_axis(raw0, x[i], y[i], guess)
+        if sh is None or sh[1] < 1.0:
             continue
         widths.append(np.sqrt(sh[0] * sh[1]))
     if len(widths) < 5:
@@ -537,6 +559,27 @@ def align(img, cx, cy):
                             cval=np.nan)
 
 
+def star_offset(ref_xy, xy, reach=250.0):
+    """How far this frame's stars sit from the reference frame's, in pixels.
+
+    The answer is the most common difference vector between the two lists of
+    bright stars; None when no offset is supported by at least six stars."""
+    if len(ref_xy) < 6 or len(xy) < 6:
+        return None
+    d = (xy[None, :, :] - ref_xy[:, None, :]).reshape(-1, 2)
+    d = d[(np.abs(d) <= reach).all(axis=1)]
+    if len(d) < 6:
+        return None
+    bins = np.arange(-reach, reach + 2.0, 2.0)
+    hist, ex, ey = np.histogram2d(d[:, 0], d[:, 1], bins=[bins, bins])
+    i, j = np.unravel_index(np.argmax(hist), hist.shape)
+    guess = np.array([0.5 * (ex[i] + ex[i + 1]), 0.5 * (ey[j] + ey[j + 1])])
+    near = d[np.hypot(*(d - guess).T) <= 2.0]
+    if len(near) < 6:
+        return None
+    return np.median(near, axis=0), len(near)
+
+
 FIX_CRPIX = True
 
 
@@ -547,63 +590,91 @@ def prepare(paths, psf_px, threshold, min_usable=5, verbose=True):
     detections, the reference plate solution, the scratch file and the star
     width that was used."""
     import tempfile
-    ref_w, ref_shape = None, None
+    state = dict(ref_w=None, ref_shape=None, level_from=None)
     store, mjds, det = None, [], []
     scratch = os.path.join(tempfile.gettempdir(),
                            f"movtrack_{os.getpid()}_{int(time.time() * 1000)}.dat")
     notes = set()
-    for n, p in enumerate(paths):
+
+    def load(n, p):
+        """Read, align and background-subtract one frame (None if unusable)."""
         try:
             img, h = image_and_header(p)
             w = build_wcs(h, fix_crpix=FIX_CRPIX)
             mjd = frame_mjd(h)
             if not np.isfinite(mjd):
-                continue
+                return None
         except Exception as e:
             if verbose:
                 print(f"    skipped {os.path.basename(p)}: {e}")
-            continue
+            return None
         if FIX_CRPIX:
             note = crop_note(h)
             if note:
                 notes.add(note)
-        level, level_from = saturation_level(h, img)
-        if ref_w is None:
-            ref_w, ref_shape = w, img.shape
-        cx, cy = to_reference(w, ref_w, ref_shape)
-        if img.shape != ref_shape:
+        level, state["level_from"] = saturation_level(h, img)
+        if state["ref_w"] is None:
+            state["ref_w"], state["ref_shape"] = w, img.shape
+        if img.shape != state["ref_shape"]:
             if verbose:
+                rs = state["ref_shape"]
                 print(f"    skipped {os.path.basename(p)}: {img.shape[1]}x"
-                      f"{img.shape[0]} px, the run is {ref_shape[1]}x{ref_shape[0]}")
-            continue
-        aligned = align(img, cx, cy)
-        cover = np.isfinite(aligned)
-        fill = float(np.nanmedian(aligned)) if cover.any() else 0.0
-        aligned = np.where(cover, aligned, fill)
-        # A background measured on a grid, not one number for the whole frame.
-        # This is the step that made the difference: next to a saturated star a
-        # global threshold sits far above anything faint.
-        bkg = Background2D(aligned, (48, 48), filter_size=(3, 3),
-                           mask=~cover, sigma_clip=SigmaClip(sigma=3.0),
-                           bkg_estimator=MedianBackground())
-        raw = np.where(cover, aligned - bkg.background, 0.0)
+                      f"{img.shape[0]} px, the run is {rs[1]}x{rs[0]}")
+            return None
+        cx, cy = to_reference(w, state["ref_w"], state["ref_shape"])
+        for _try in range(2):
+            aligned = align(img, cx, cy)
+            cover = np.isfinite(aligned)
+            fill = float(np.nanmedian(aligned)) if cover.any() else 0.0
+            aligned = np.where(cover, aligned, fill)
+            # A background measured on a grid, not one number for the whole
+            # frame. This is the step that made the difference: next to a
+            # saturated star a global threshold sits far above anything faint.
+            bkg = Background2D(aligned, (48, 48), filter_size=(3, 3),
+                               mask=~cover, sigma_clip=SigmaClip(sigma=3.0),
+                               bkg_estimator=MedianBackground())
+            raw = np.where(cover, aligned - bkg.background, 0.0)
+            rms_raw = float(sigma_clipped_stats(raw[cover], sigma=3.0)[2])
+            # The plate solutions are checked against the stars themselves.
+            # Frames of one night do not all carry an equally good solution:
+            # on the 2010 Faulkes comet frames some had a CD matrix and some
+            # only a nominal CDELT/CROTA pointing, ~100 px apart, and lined up
+            # through their headers the stars of one frame landed nowhere near
+            # those of the next. Every star of such a frame then looked like a
+            # mover. Each frame's bright stars are compared with the first
+            # frame's; when they all sit off by the same amount, the frame is
+            # moved onto them.
+            gx, gy, gf = find_sources(raw, psf_px or 3.2, 15.0 * rms_raw)
+            top = np.argsort(-gf)[:150]
+            xy = np.c_[gx[top], gy[top]]
+            if state.get("ref_stars") is None:
+                state["ref_stars"] = xy
+                break
+            off = star_offset(state["ref_stars"], xy)
+            if off is None or _try:
+                if off is None and verbose and len(state["ref_stars"]) >= 6:
+                    print(f"\n    {os.path.basename(p)}: its stars could not "
+                          f"be matched to the first frame's - lined up by the "
+                          f"plate solution alone")
+                break
+            (ox, oy), nmatch = off
+            if np.hypot(ox, oy) <= 0.5:
+                break
+            if verbose:
+                print(f"\n    {os.path.basename(p)}: plate solution "
+                      f"{np.hypot(ox, oy):.1f} px off the stars "
+                      f"({nmatch} stars agree) - lined up on the stars")
+            cx = cx.copy(); cy = cy.copy()
+            cx[2] += cx[0] * ox + cx[1] * oy
+            cy[2] += cy[0] * ox + cy[1] * oy
+        return dict(n=n, img=img, w=w, mjd=mjd, level=level, cx=cx, cy=cy,
+                    cover=cover, raw=raw, rms_raw=rms_raw)
+
+    def finish(fr):
+        nonlocal store
+        raw, cover, img = fr["raw"], fr["cover"], fr["img"]
+        cx, cy = fr["cx"], fr["cy"]
         clean = gaussian_filter(raw, 1.0)
-        rms_raw = float(sigma_clipped_stats(raw[cover], sigma=3.0)[2])
-        # The star width comes from the first frame, unless it was given.
-        if psf_px is None:
-            fw, nst = measure_psf(raw, rms_raw, level, 3.2)
-            if np.isfinite(fw):
-                psf_px = fw
-                if verbose:
-                    print(f"    star width (FWHM) measured on {nst} stars of "
-                          f"the first frame: {fw:.2f} px "
-                          f"= {fw * pixel_scale_of(w):.2f} arcsec")
-            else:
-                psf_px = 3.2
-                if verbose:
-                    print(f"    too few clean stars to measure their width "
-                          f"({nst}); using 3.2 px - give --psf_px if that is "
-                          f"wrong for this telescope")
         # The threshold has to be measured on the image the finder actually
         # sees. Taking it from the background BEFORE smoothing made "4 sigma"
         # mean 13.5 sigma of the smoothed frame - the known asteroid peaks at
@@ -622,12 +693,12 @@ def prepare(paths, psf_px, threshold, min_usable=5, verbose=True):
         # problem, so they are masked as one. They are found on the frame as
         # it was read, where the level means what the header says it means,
         # and carried to the reference grid.
-        zones = saturated_zones(img, level, psf_px)
+        zones = saturated_zones(img, fr["level"], psf_px)
         if len(zones):
             # this frame's pixel -> reference pixel: invert the affine map
             A = np.array([[cx[0], cx[1]], [cy[0], cy[1]]])
-            Ai = np.linalg.inv(A)
-            ref_xy = (Ai @ (zones[:, :2] - np.array([cx[2], cy[2]])).T).T
+            ref_xy = (np.linalg.inv(A) @
+                      (zones[:, :2] - np.array([cx[2], cy[2]])).T).T
             zones = np.c_[ref_xy, zones[:, 2]]
         edge = int(np.ceil(2 * psf_px))
         k = len(mjds)
@@ -658,20 +729,56 @@ def prepare(paths, psf_px, threshold, min_usable=5, verbose=True):
             store = np.memmap(scratch, dtype=np.float32, mode="w+",
                               shape=(len(paths),) + clean.shape)
         store[k] = clean.astype(np.float32)
-        mjds.append(mjd)
+        mjds.append(fr["mjd"])
         if verbose:
-            print(f"\r    {n + 1}/{len(paths)} frames", end="", flush=True)
+            print(f"\r    {fr['n'] + 1}/{len(paths)} frames", end="", flush=True)
+
+    pending = []
+    for n, p in enumerate(paths):
+        fr = load(n, p)
+        if fr is None:
+            continue
+        if psf_px is not None:
+            finish(fr)
+            continue
+        # The star width comes from the first frames, unless it was given:
+        # the first frame is measured, and the next two say which of its
+        # sources are stars (a cosmic ray is never in two frames).
+        pending.append(fr)
+        if len(pending) < 3 and n < len(paths) - 1:
+            continue
+        fw, nst = measure_psf([(q["raw"], q["rms_raw"]) for q in pending],
+                              pending[0]["level"])
+        if np.isfinite(fw):
+            psf_px = fw
+            if verbose:
+                print(f"\n    star width (FWHM) measured on {nst} stars of "
+                      f"the first frame: {fw:.2f} px "
+                      f"= {fw * pixel_scale_of(pending[0]['w']):.2f} arcsec")
+        else:
+            psf_px = 3.2
+            if verbose:
+                print(f"\n    too few clean stars to measure their width "
+                      f"({nst}); using 3.2 px - give --psf_px if that is "
+                      f"wrong for this telescope")
+        for q in pending:
+            finish(q)
+        pending = []
+    if pending:                                   # fewer frames than that
+        psf_px = 3.2
+        for q in pending:
+            finish(q)
     if verbose:
         print()
-        if ref_w is not None:
-            print(f"    saturation: {level_from}")
+        if state["level_from"]:
+            print(f"    saturation: {state['level_from']}")
         for note in sorted(notes):
             print(f"    NOTE: {note}")
     if len(mjds) < min_usable:
         raise SystemExit("Too few usable frames.")
     frames = store[:len(mjds)]
-    return (frames, np.array(mjds), np.array(det).reshape(-1, 4), ref_w,
-            scratch, psf_px)
+    return (frames, np.array(mjds), np.array(det).reshape(-1, 4),
+            state["ref_w"], scratch, psf_px)
 
 
 def cap_per_frame(det, budget, n_frames):
