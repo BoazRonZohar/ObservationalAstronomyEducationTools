@@ -1629,6 +1629,13 @@ def search_prepared(frames, mjds, det, psf_px=3.2, min_snr=8.0,
     c_step = max(1, len(cands) // 100)
     s_half, s_core = max(22, int(6 * psf_px)), max(3, int(round(psf_px)))
     static = static_sky(frames) if len(frames) >= 5 and cands else None
+    # Measured on ONE frame, not on the median: the median of many frames is
+    # so quiet that every faint star in it stands 5 of its own sigmas high,
+    # while a star matters to the measurement only when it is a few times the
+    # noise of the frame the object is measured in.
+    frame_rms = (float(sigma_clipped_stats(
+        np.asarray(frames[len(frames) // 2]), sigma=3.0)[2])
+        if static is not None else np.nan)
     for ci, (vx, vy, x0, y0, t0, nep) in enumerate(cands):
         if verbose and ci % c_step == 0 and ci:
             print(f"\r    {ci}/{len(cands)} lines stacked, "
@@ -1698,8 +1705,13 @@ def search_prepared(frames, mjds, det, psf_px=3.2, min_snr=8.0,
         # effort. Each frame counts from S/N 3, which a box of pure noise
         # reaches somewhere often enough; on an empty synthetic night with
         # 6 px stars a "track" of such peaks, median S/N 3.3, went through
-        # every later test. The 2011 asteroid is at S/N 5 to 12.
-        if float(np.median(SN)) < 4.0:
+        # every later test. The 2011 asteroid is at S/N 5 to 12. The floor is
+        # 5, not 4: on the 2P/Encke frames three "objects" at a median of 4.0
+        # to 4.5 were a diffraction spike and empty sky, while the two real
+        # ones measure 6.6 and 8.1. This S/N is the peak over the local noise,
+        # about 1.5 times the S/N of the whole image of the object - a
+        # synthetic asteroid put in at S/N 5 measures 7.6 here.
+        if float(np.median(SN)) < 5.0:
             continue
         res = np.hypot(X - np.polyval(cx, t), Y - np.polyval(cy, t))
         rms_px = float(np.sqrt(np.mean(res ** 2)))
@@ -1714,14 +1726,22 @@ def search_prepared(frames, mjds, det, psf_px=3.2, min_snr=8.0,
         # against. On the 2011 Faulkes frames the known asteroid moves 7.
         if moved_px < 3.0 * psf_px:
             continue
-        # A "track" that stays on a star the whole night is that star. On the
+        # Only the frames in which the object is on EMPTY sky count. On the
         # Kelt-16 frames (RASA 11, 3 hours) the centroids of bright stars
         # drifted by 3 px over the night and every such star came out as a
-        # mover at 2 arcsec/hour. A real object crosses a star now and then;
-        # it does not sit on one for most of the run.
-        if len(stat):
-            dd, _i = cKDTree(stat).query(np.c_[X, Y])
-            if float(np.median(dd)) < psf_px:
+        # mover at 2 arcsec/hour; on 2P/Encke "tracks" sat on a saturated
+        # star, ran along its diffraction spike, or began on a star and went
+        # on through noise. What is under each position is read from the
+        # median of all frames, which holds the stars, the saturated cores and
+        # their spikes and nothing that moves. A real object crosses a star
+        # now and then; it must still be seen often enough, and well enough,
+        # where nothing else is.
+        if static is not None:
+            xi_ = np.clip(np.round(X).astype(int), 0, static.shape[1] - 1)
+            yi_ = np.clip(np.round(Y).astype(int), 0, static.shape[0] - 1)
+            off = static[yi_, xi_] < 3.0 * frame_rms
+            if (off.sum() < max(5, int(np.ceil(0.5 * in_field)))
+                    or float(np.median(SN[off])) < 5.0):
                 continue
         # Five times, not three. A comet is not a point: its centroid is
         # measured less precisely than a star's however good the frames are,
@@ -1765,7 +1785,27 @@ def search_prepared(frames, mjds, det, psf_px=3.2, min_snr=8.0,
                 break
         else:
             merged.append(o)
-    return merged
+    # A line through two different objects is not a third object. On the
+    # 2P/Encke frames two "tracks" at 35 and 38 arcsec/hour took some frames
+    # from the comet and some from 2011 NV1, both moving at 20. Their ends do
+    # not match either real track, so the merge above kept them. They are
+    # recognised by what they MEASURED: a track that shares its positions,
+    # frame for frame, with a better one, is dropped. Better is seen in more
+    # frames, then with a higher S/N.
+    kept = []
+    for o in sorted(merged, key=lambda z: (-z["n"], -z["snr_frame"])):
+        shared = 0
+        for m in kept:
+            same_t = np.isin(o["T"], m["T"])
+            if not same_t.any():
+                continue
+            j = np.searchsorted(m["T"], o["T"][same_t])
+            shared += int(np.sum(np.hypot(o["X"][same_t] - m["X"][j],
+                                          o["Y"][same_t] - m["Y"][j]) < psf_px))
+        if shared >= 2 and shared >= 0.25 * o["n"]:
+            continue
+        kept.append(o)
+    return sorted(kept, key=lambda z: -z["sig"])
 
 
 def on_sky(o, ref_w):
