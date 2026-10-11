@@ -143,14 +143,30 @@ def image_and_header(path):
     A three-plane colour frame gives up its green plane - half the pixels of
     the Bayer mosaic rather than a quarter, so the sharpest of the three. A
     frame that is already one plane is used as it stands."""
-    with fits.open(path, memmap=False) as hd:
+    # Mapped, not read: of a three-plane colour frame only the green plane is
+    # used, and reading all three moved three times the data off the disk.
+    with fits.open(path, memmap=True) as hd:
         h, d = hd[0].header, hd[0].data
         if d is None and len(hd) > 1:
             h, d = hd[1].header, hd[1].data
         if d is None:
             raise RuntimeError("no image data")
-        img = np.asarray(d[1] if d.ndim == 3 else d, dtype=float)
+        img = np.array(d[1] if d.ndim == 3 else d, dtype=float)
+        del d
     return img, h
+
+
+def noise_of(img, mask=None, n_max=1_000_000):
+    """The sigma-clipped standard deviation of an image's sky, from a sample.
+
+    Clipping all 26 million pixels of a RASA frame took 6 s, three times per
+    frame - on a dense 14-frame night 38% of the whole run, 220 s. A noise
+    level is a property of the sky, not of every pixel: a regular sample of a
+    million pixels gives the same number to a fraction of a percent."""
+    v = img[mask] if mask is not None else np.asarray(img).ravel()
+    if v.size > n_max:
+        v = v[::int(np.ceil(v.size / n_max))]
+    return float(sigma_clipped_stats(v, sigma=3.0)[2])
 
 
 def build_wcs(header, fix_crpix=True):
@@ -559,6 +575,50 @@ def align(img, cx, cy):
                             cval=np.nan)
 
 
+def mesh_to_image(mesh, shape, box):
+    """A background mesh spread bilinearly over the full image.
+
+    Background2D's own interpolation is a cubic spline over every pixel - 2.8 s
+    on a 26-megapixel RASA frame, and deprecated in photutils 3. The sky is
+    smooth on the scale of a 48 px box, so a straight line between box
+    centres gives the same background (0.297 against 0.290 counts rms on a
+    test sky with 5 counts of noise) in a twentieth of the time."""
+    ny, nx = shape
+    my, mx = mesh.shape
+
+    def weights(n, m):
+        # an (n x m) matrix: each pixel's two neighbouring box centres
+        c = np.clip((np.arange(n) - (box - 1) / 2.0) / box, 0, m - 1)
+        i0 = np.minimum(np.floor(c).astype(int), max(m - 2, 0))
+        w = c - i0
+        W = np.zeros((n, m))
+        W[np.arange(n), i0] += 1 - w
+        W[np.arange(n), np.minimum(i0 + 1, m - 1)] += w
+        return W
+    # as two small matrix products, which is far quicker than gathering
+    # 26 million values by index
+    return (weights(ny, my) @ mesh) @ weights(nx, mx).T
+
+
+def sky_background(img, cover, box=48):
+    """The sky under a frame, on a grid of `box` px boxes, as a full image.
+
+    The box medians are taken on the frame binned 4x4: a box is still 48 px
+    of sky, but holds a sixteenth of the values to sort. On a 26-megapixel
+    RASA frame this step took 8 s of the 21 s spent on each frame, most of it
+    sorting. The sky it returns differs from the full-resolution one by
+    0.2 counts rms, against 17.5 counts of noise in a single pixel."""
+    k = 4
+    ny, nx = img.shape
+    ey, ex = ny - ny % k, nx - nx % k
+    small = img[:ey, :ex].reshape(ey // k, k, ex // k, k).mean(axis=(1, 3))
+    gap = ~cover[:ey, :ex].reshape(ey // k, k, ex // k, k).all(axis=(1, 3))
+    bkg = Background2D(small, (box // k, box // k), filter_size=(3, 3),
+                       mask=gap, sigma_clip=SigmaClip(sigma=3.0),
+                       bkg_estimator=MedianBackground())
+    return mesh_to_image(np.asarray(bkg.background_mesh, float), img.shape, box)
+
+
 def star_offset(ref_xy, xy, reach=250.0):
     """How far this frame's stars sit from the reference frame's, in pixels.
 
@@ -630,11 +690,9 @@ def prepare(paths, psf_px, threshold, min_usable=5, verbose=True):
             # A background measured on a grid, not one number for the whole
             # frame. This is the step that made the difference: next to a
             # saturated star a global threshold sits far above anything faint.
-            bkg = Background2D(aligned, (48, 48), filter_size=(3, 3),
-                               mask=~cover, sigma_clip=SigmaClip(sigma=3.0),
-                               bkg_estimator=MedianBackground())
-            raw = np.where(cover, aligned - bkg.background, 0.0)
-            rms_raw = float(sigma_clipped_stats(raw[cover], sigma=3.0)[2])
+            raw = np.where(cover, aligned - sky_background(aligned, cover),
+                           0.0)
+            rms_raw = noise_of(raw, cover)
             # The plate solutions are checked against the stars themselves.
             # Frames of one night do not all carry an equally good solution:
             # on the 2010 Faulkes comet frames some had a CD matrix and some
@@ -644,7 +702,18 @@ def prepare(paths, psf_px, threshold, min_usable=5, verbose=True):
             # mover. Each frame's bright stars are compared with the first
             # frame's; when they all sit off by the same amount, the frame is
             # moved onto them.
-            gx, gy, gf = find_sources(raw, psf_px or 3.2, 15.0 * rms_raw)
+            # Found on the frame binned 2x2 when the stars are wide enough:
+            # a quarter of the pixels, and the median offset of a hundred
+            # bright stars is still good to a few hundredths of a pixel.
+            fw = psf_px or 3.2
+            if fw >= 3.0:
+                ny_, nx_ = raw.shape
+                ey, ex = ny_ - ny_ % 2, nx_ - nx_ % 2
+                b2 = raw[:ey, :ex].reshape(ey // 2, 2, ex // 2, 2).mean(axis=(1, 3))
+                gx, gy, gf = find_sources(b2, fw / 2.0, 15.0 * rms_raw / 2.0)
+                gx, gy = 2.0 * gx + 0.5, 2.0 * gy + 0.5
+            else:
+                gx, gy, gf = find_sources(raw, fw, 15.0 * rms_raw)
             top = np.argsort(-gf)[:150]
             xy = np.c_[gx[top], gy[top]]
             if state.get("ref_stars") is None:
@@ -679,7 +748,7 @@ def prepare(paths, psf_px, threshold, min_usable=5, verbose=True):
         # sees. Taking it from the background BEFORE smoothing made "4 sigma"
         # mean 13.5 sigma of the smoothed frame - the known asteroid peaks at
         # 11 sigma there and was thrown away by the very step meant to find it.
-        rms = float(sigma_clipped_stats(clean[cover], sigma=3.0)[2])
+        rms = noise_of(clean, cover)
         # The finder's default shape cuts exist to reject things that are not
         # stars - which includes comets. A coma is exactly the sort of soft,
         # extended source `sharplo` throws away, so the cuts are opened here.
@@ -1654,9 +1723,8 @@ def search_prepared(frames, mjds, det, psf_px=3.2, min_snr=8.0,
     # so quiet that every faint star in it stands 5 of its own sigmas high,
     # while a star matters to the measurement only when it is a few times the
     # noise of the frame the object is measured in.
-    frame_rms = (float(sigma_clipped_stats(
-        np.asarray(frames[len(frames) // 2]), sigma=3.0)[2])
-        if static is not None else np.nan)
+    frame_rms = (noise_of(np.asarray(frames[len(frames) // 2]))
+                 if static is not None else np.nan)
     for ci, (vx, vy, x0, y0, t0, nep) in enumerate(cands):
         if verbose and ci % c_step == 0 and ci:
             print(f"\r    {ci}/{len(cands)} lines stacked, "
