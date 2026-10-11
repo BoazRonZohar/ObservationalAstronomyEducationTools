@@ -1151,12 +1151,32 @@ def identify(ra_deg, dec_deg, mjd, radius_arcsec=30.0, site="500", timeout=25):
             "-mime": "text", "-output": "object", "-loc": str(site),
             "-filter": "0", "-objFilter": "111", "-refsys": "EQJ2000",
             "-from": "FindMovingObjects"})
-    try:
-        with urllib.request.urlopen(url, timeout=timeout) as r:
-            body = r.read().decode("utf-8", "replace")
-    except Exception as e:
-        return {"error": str(e)}
-    return {"objects": parse_skybot(body)}
+    # SkyBoT reports its own failures INSIDE an ordinary reply: a header line
+    # "# Flag: -1" and a message, with no rows. Read as an empty answer, that
+    # became "NO known solar system object - worth a second look" for
+    # (21246) 1995 YF1 on the WASP-52 frames, which the same query named
+    # 3.5 arcsec away a minute later. A failed reply is retried, and if it
+    # keeps failing it is reported as a failure, not as an empty sky.
+    err = "no reply"
+    for attempt in range(3):
+        if attempt:
+            time.sleep(3.0 * attempt)
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as r:
+                body = r.read().decode("utf-8", "replace")
+        except Exception as e:
+            err = str(e)
+            continue
+        m = re.search(r"^#\s*Flag\s*:\s*(-?\d+)", body, re.M)
+        if m and int(m.group(1)) < 0:
+            line = next((ln.strip("# ").strip() for ln in body.splitlines()
+                         if ln.strip("# ").strip()
+                         and not ln.lstrip("# ").lower().startswith(("flag", "ticket"))),
+                        "")
+            err = f"SkyBoT reported an error: {line or 'Flag -1'}"
+            continue
+        return {"objects": parse_skybot(body)}
+    return {"error": err}
 
 
 def mpc_url(number, name):
@@ -1194,8 +1214,9 @@ def name_it(ra, dec, mjd, args, motion=None):
     r = identify(ra, dec, mjd, radius_arcsec=args.match_arcsec,
                  site=args.site_code)
     if "error" in r:
-        return [f"could not reach SkyBoT ({r['error']}) - the position above "
-                f"can be pasted into it by hand"]
+        return [f"catalogue check FAILED ({r['error']}) - this is not a "
+                f"\"no known object\"; the position above can be pasted into "
+                f"SkyBoT by hand"]
     objs = r.get("objects", [])
     near = [o for o in objs if o["sep"] <= args.match_arcsec]
     if not near:
@@ -1679,6 +1700,16 @@ def search_prepared(frames, mjds, det, psf_px=3.2, min_snr=8.0,
 
     # measure each distinct object properly: follow it frame by frame from its
     # own predicted path, and fit the track to what is actually there
+    # MO_DEBUG=1 prints why each candidate that was stacked strongly enough
+    # was then turned down - for checking a known object that is not reported.
+    debug = bool(os.environ.get("MO_DEBUG"))
+
+    def _why(h, reason):
+        if debug:
+            print(f"    [debug] rejected line at ({h['x0']:.0f},{h['y0']:.0f}) "
+                  f"px, {np.hypot(h['vx'], h['vy']):.1f} px/h, stack S/N "
+                  f"{h['snr']:.1f}: {reason}")
+
     out = []
     for g in objects:
         h = g[0]
@@ -1693,6 +1724,7 @@ def search_prepared(frames, mjds, det, psf_px=3.2, min_snr=8.0,
         cy = np.array([h["vy"], h["y0"] - h["vy"] * h["t0"]])
         r = follow(frames, hours, cx, cy, psf_px)
         if r is None:
+            _why(h, "could not be measured in 4 frames")
             continue
         X, Y, t, SN, cx, cy, in_field = r
         # Seen in at least half of the frames it was inside - not 60% of the
@@ -1700,6 +1732,7 @@ def search_prepared(frames, mjds, det, psf_px=3.2, min_snr=8.0,
         # through the night is inside for half of it; the old count could
         # never let it through, whatever the triples found.
         if len(X) < max(5, int(np.ceil(0.5 * in_field))):
+            _why(h, f"seen in {len(X)} of {in_field} frames")
             continue
         # And what it was seen with has to be more than the noise's own best
         # effort. Each frame counts from S/N 3, which a box of pure noise
@@ -1712,11 +1745,13 @@ def search_prepared(frames, mjds, det, psf_px=3.2, min_snr=8.0,
         # about 1.5 times the S/N of the whole image of the object - a
         # synthetic asteroid put in at S/N 5 measures 7.6 here.
         if float(np.median(SN)) < 5.0:
+            _why(h, f"median S/N {np.median(SN):.1f}")
             continue
         res = np.hypot(X - np.polyval(cx, t), Y - np.polyval(cy, t))
         rms_px = float(np.sqrt(np.mean(res ** 2)))
         moved_px = float(np.hypot(cx[0], cy[0]) * (t[-1] - t[0]))
         if rms_px <= 0 or moved_px / rms_px < min_significance:
+            _why(h, f"moved {moved_px:.1f} px, scatter {rms_px:.2f} px")
             continue
         # Less than three star widths over the whole run is not a motion this
         # method can confirm: the "track" of a faint star measured at S/N 4
@@ -1725,6 +1760,7 @@ def search_prepared(frames, mjds, det, psf_px=3.2, min_snr=8.0,
         # there is also no empty sky to measure the middle of the track
         # against. On the 2011 Faulkes frames the known asteroid moves 7.
         if moved_px < 3.0 * psf_px:
+            _why(h, f"moved {moved_px:.1f} px < 3 star widths")
             continue
         # Only the frames in which the object is on EMPTY sky count. On the
         # Kelt-16 frames (RASA 11, 3 hours) the centroids of bright stars
@@ -1746,6 +1782,8 @@ def search_prepared(frames, mjds, det, psf_px=3.2, min_snr=8.0,
             off = static[yi_, xi_] < np.maximum(3.0, SN) * frame_rms
             if (off.sum() < max(5, int(np.ceil(0.5 * in_field)))
                     or float(np.median(SN[off])) < 5.0):
+                _why(h, f"on empty sky in {int(off.sum())} of {len(X)} frames"
+                        f" (in field {in_field})")
                 continue
         # Five times, not three. A comet is not a point: its centroid is
         # measured less precisely than a star's however good the frames are,
@@ -1764,6 +1802,7 @@ def search_prepared(frames, mjds, det, psf_px=3.2, min_snr=8.0,
         allow = max(max_wander * max(precision, 0.15), 3.0 * expected) \
             if np.isfinite(precision) else np.inf
         if rms_px > allow:
+            _why(h, f"scatter {rms_px:.2f} px > allowed {allow:.2f} px")
             continue                      # wanders further than it should
         out.append(dict(n=len(X), n_field=in_field, vx=cx[0], vy=cy[0],
                         x0=np.polyval(cx, 0.0), y0=np.polyval(cy, 0.0),
@@ -1807,6 +1846,10 @@ def search_prepared(frames, mjds, det, psf_px=3.2, min_snr=8.0,
             shared += int(np.sum(np.hypot(o["X"][same_t] - m["X"][j],
                                           o["Y"][same_t] - m["Y"][j]) < psf_px))
         if shared >= 2 and shared >= 0.25 * o["n"]:
+            if debug:
+                print(f"    [debug] dropped a track at {np.hypot(o['vx'], o['vy']):.1f}"
+                      f" px/h: {shared} of its {o['n']} points belong to a "
+                      f"better track")
             continue
         kept.append(o)
     return sorted(kept, key=lambda z: -z["sig"])
