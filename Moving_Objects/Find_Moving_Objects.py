@@ -1780,7 +1780,13 @@ def search_prepared(frames, mjds, det, psf_px=3.2, min_snr=8.0,
             # and treating every faint star as "on a star" cost the comet of
             # the 2010 Faulkes frames half of its frames.
             off = static[yi_, xi_] < np.maximum(3.0, SN) * frame_rms
-            if (off.sum() < max(5, int(np.ceil(0.5 * in_field)))
+            # Most of the frames it WAS seen in, not the full count again: a
+            # frame that lands on a star is not evidence against the object.
+            # Asked for five of five, the comet C/2007 S2 - seen in 5 of 10
+            # frames, one of them on a star - was refused at stack S/N 37,
+            # while what this test exists to remove (a saturated star, the
+            # centroid of a star drifting) is on empty sky in no frame at all.
+            if (off.sum() < max(4, int(np.ceil(0.5 * len(X))))
                     or float(np.median(SN[off])) < 5.0):
                 _why(h, f"on empty sky in {int(off.sum())} of {len(X)} frames"
                         f" (in field {in_field})")
