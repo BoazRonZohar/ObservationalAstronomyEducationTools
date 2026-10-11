@@ -143,16 +143,22 @@ def image_and_header(path):
     A three-plane colour frame gives up its green plane - half the pixels of
     the Bayer mosaic rather than a quarter, so the sharpest of the three. A
     frame that is already one plane is used as it stands."""
-    # Mapped, not read: of a three-plane colour frame only the green plane is
-    # used, and reading all three moved three times the data off the disk.
-    with fits.open(path, memmap=True) as hd:
-        h, d = hd[0].header, hd[0].data
-        if d is None and len(hd) > 1:
-            h, d = hd[1].header, hd[1].data
-        if d is None:
+    # Of a three-plane colour frame only the green plane is read off the
+    # disk: `section` reads just that plane and applies BZERO/BSCALE itself.
+    # (A memory map would do the same for floating-point files, and refuses
+    # outright the integer-with-BZERO files that most cameras write.)
+    with fits.open(path, memmap=False, lazy_load_hdus=True) as hd:
+        hdu = hd[0]
+        if hdu.header.get("NAXIS", 0) < 2 and len(hd) > 1:
+            hdu = hd[1]
+        h = hdu.header
+        if h.get("NAXIS", 0) < 2:
             raise RuntimeError("no image data")
-        img = np.array(d[1] if d.ndim == 3 else d, dtype=float)
-        del d
+        if h["NAXIS"] == 3:
+            d = hdu.section[1]
+        else:
+            d = hdu.data
+        img = np.array(d, dtype=float)
     return img, h
 
 
