@@ -708,18 +708,7 @@ def prepare(paths, psf_px, threshold, min_usable=5, verbose=True):
             # mover. Each frame's bright stars are compared with the first
             # frame's; when they all sit off by the same amount, the frame is
             # moved onto them.
-            # Found on the frame binned 2x2 when the stars are wide enough:
-            # a quarter of the pixels, and the median offset of a hundred
-            # bright stars is still good to a few hundredths of a pixel.
-            fw = psf_px or 3.2
-            if fw >= 3.0:
-                ny_, nx_ = raw.shape
-                ey, ex = ny_ - ny_ % 2, nx_ - nx_ % 2
-                b2 = raw[:ey, :ex].reshape(ey // 2, 2, ex // 2, 2).mean(axis=(1, 3))
-                gx, gy, gf = find_sources(b2, fw / 2.0, 15.0 * rms_raw / 2.0)
-                gx, gy = 2.0 * gx + 0.5, 2.0 * gy + 0.5
-            else:
-                gx, gy, gf = find_sources(raw, fw, 15.0 * rms_raw)
+            gx, gy, gf = find_sources(raw, psf_px or 3.2, 15.0 * rms_raw)
             top = np.argsort(-gf)[:150]
             xy = np.c_[gx[top], gy[top]]
             if state.get("ref_stars") is None:
