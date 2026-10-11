@@ -3130,7 +3130,10 @@ def comp_star_table(out_root):
         for ch in chans:
             v = stats.get(ch, {}).get(c, float("nan"))
             cells.append("%9.0f  " % (1000 * v) if np.isfinite(v) else "        -  ")
-        flag = "   <- close to the target" if np.isfinite(rel) and rel <= 1.25 else ""
+        # close in brightness, either way - the old test had no lower bound
+        # and put the mark on every star fainter than the target
+        flag = ("   <- close to the target" if np.isfinite(rel) and 0.8 <= rel <= 1.25
+                else "")
         lines.append("  %-5s   %6.2fx   %s%s"
                      % (c, rel, "".join(cells), flag))
     lines.append("")
@@ -4597,6 +4600,35 @@ def _file_safe(text):
     return s or "target"
 
 
+def curve_noise_mmag(df, fallback=None):
+    """The noise of the light curve itself, for its error bars (mmag).
+
+    Taken from the curve's own point-to-point scatter: the second difference
+    y[i-1] - 2 y[i] + y[i+1] removes any straight-line change across three
+    neighbouring frames, so an eclipse ingress or a slow drift does not count
+    as noise, and the median absolute value keeps a few bad frames from
+    inflating it. Divided by sqrt(6) it is the scatter of one point.
+
+    The error bars used to be the noise of the comparison stars measured
+    against each other. Those are usually fainter than the target, so they
+    are noisier than it: on HIP 65 A they gave 4.7 mmag against 3.1 for the
+    target - bars half as long again as the real scatter and as large as
+    the 5.6 mmag transit, which they hid. `fallback` (the comparison-star
+    figure) is used only when the curve is too short to measure."""
+    if "mag_comp_minus_target" not in df.columns:
+        return fallback
+    d = df[df["mag_comp_minus_target"].notna()]
+    tcol = "elapsed_min" if "elapsed_min" in d.columns else ("jd" if "jd" in d.columns else None)
+    if tcol is not None:
+        d = d.sort_values(tcol)
+    y = d["mag_comp_minus_target"].to_numpy(float)
+    if len(y) < 8:
+        return fallback
+    d2 = y[:-2] - 2.0 * y[1:-1] + y[2:]
+    s = 1.4826 * np.median(np.abs(d2 - np.median(d2))) / np.sqrt(6.0)
+    return float(s * 1000) if np.isfinite(s) and s > 0 else fallback
+
+
 def write_varastro(df, out_dir, target_name, channel, measured_noise=None,
                    suffix=""):
     """The light curve as VarAstro takes it: plain text, no header line, three
@@ -4607,7 +4639,8 @@ def write_varastro(df, out_dir, target_name, channel, measured_noise=None,
     were not in the header it could not be computed, and the file is not
     written rather than carry JD_UTC under a BJD name. The error is the one
     on the plot and in the spreadsheet - the larger of the formal error and
-    the noise measured on the comparison stars."""
+    the light curve's own point-to-point scatter (curve_noise_mmag)."""
+    measured_noise = curve_noise_mmag(df, measured_noise)
     if "bjd_tdb" not in df.columns or not df["bjd_tdb"].notna().any():
         print("    VarAstro file not written: no BJD_TDB (target coordinates "
               "missing from the header)")
@@ -4671,6 +4704,7 @@ def write_lightcurve_sheet(df, config, out_path, target_name, channel,
     graph. This file has those three first and nothing else in the way, so the
     columns can be selected straight away and turned into a scatter plot with
     error bars."""
+    measured_noise = curve_noise_mmag(df, measured_noise)
     cols = {}
     if "elapsed_min" in df.columns:
         cols["Time_minutes"] = df["elapsed_min"]
@@ -4722,7 +4756,7 @@ def write_lightcurve_sheet(df, config, out_path, target_name, channel,
                 "C = Var_minus_Comp: the variable star minus the comparison",
                 "    ensemble. This is the light curve - not the star's own",
                 "    magnitude. Plot this one.",
-                "D = error, from the scatter measured on the comparison stars",
+                "D = error, from the light curve's own point-to-point scatter",
                 "To plot: select columns A and C -> Insert -> Scatter.",
                 "Then invert the vertical axis (a larger magnitude means fainter),",
                 "and add error bars from column D (Custom -> both directions).",
@@ -4792,6 +4826,44 @@ def finder_chart(image, stars, config, out_path, target_name, channel, note=""):
     plt.close(fig)
 
 
+def _bin_curve(x, y, err, minutes_per_bin=5.0, minutes_axis=True):
+    """Mean and its error in consecutive groups of frames.
+
+    The error of a mean is the frames' own error bars combined, not the
+    spread inside the group: on a steep eclipse the spread is the slope,
+    and it made the means look several times less certain than the frames.
+
+    The group is as many frames as fit in `minutes_per_bin` at the median
+    cadence, at least 3. Groups follow the frame order, so a gap in the run
+    (a cloud, a flip) never merges two separate stretches into one mean."""
+    x = np.asarray(x, float)
+    y = np.asarray(y, float)
+    e = np.asarray(err, float)
+    ok = np.isfinite(x) & np.isfinite(y) & np.isfinite(e)
+    x, y, e = x[ok], y[ok], e[ok]
+    o = np.argsort(x)
+    x, y, e = x[o], y[o], e[o]
+    if len(x) < 18:
+        return np.array([]), np.array([]), np.array([])
+    step = float(np.median(np.diff(x)))
+    if not np.isfinite(step) or step <= 0:
+        return np.array([]), np.array([]), np.array([])
+    per_bin = minutes_per_bin if minutes_axis else minutes_per_bin / 1440.0
+    k = max(3, int(round(per_bin / step)))
+    xb, yb, eb = [], [], []
+    start = 0
+    for i in range(1, len(x) + 1):
+        # close the group when it is full or the next frame is after a gap
+        if i == len(x) or i - start >= k or x[i] - x[i - 1] > 3 * step:
+            if i - start >= 3:
+                seg = y[start:i]
+                xb.append(float(np.mean(x[start:i])))
+                yb.append(float(np.mean(seg)))
+                eb.append(float(np.sqrt(np.sum(e[start:i] ** 2)) / len(seg)))
+            start = i
+    return np.array(xb), np.array(yb), np.array(eb)
+
+
 def _plot_main_curve(plt, x, y, err, xlabel, flip_marks, step_marks, config,
                      measured_noise, title, out_path):
     plt.figure(figsize=(10, 4))
@@ -4799,7 +4871,15 @@ def _plot_main_curve(plt, x, y, err, xlabel, flip_marks, step_marks, config,
     # than a round marker and disappeared behind it; the caps still show
     # where each point is
     plt.errorbar(x, y, yerr=err,
-                 fmt="none", elinewidth=1, capsize=3)
+                 fmt="none", elinewidth=1, capsize=3, label="each frame")
+    # Means over about five minutes, on top. A transit of a few mmag is about
+    # as deep as one frame's scatter and does not stand out from single
+    # points; averaged it does. Drawn only when a bin holds 3 frames or more
+    # and there are at least 6 bins.
+    xb, yb, eb = _bin_curve(x, y, err, minutes_per_bin=5.0, minutes_axis=(xlabel.startswith("Elapsed")))
+    if len(xb) >= 6:
+        plt.errorbar(xb, yb, yerr=eb, fmt="none", ecolor="darkorange",
+                     elinewidth=2.2, capsize=4, label="5-min mean")
     if flip_marks:
         for t in flip_marks:
             plt.axvline(t, color="darkorange", ls="--", lw=1.2)
@@ -4808,8 +4888,7 @@ def _plot_main_curve(plt, x, y, err, xlabel, flip_marks, step_marks, config,
         for t in step_marks:
             plt.axvline(t, color="purple", ls=":", lw=1.6)
         plt.plot([], [], color="purple", ls=":", lw=1.6, label="throughput step")
-    if flip_marks or step_marks:
-        plt.legend(fontsize=8)
+    plt.legend(fontsize=8)
     plt.gca().invert_yaxis()
     plt.xlabel(xlabel)
     plt.ylabel("Variable - comparison ensemble (mag)")
@@ -4819,7 +4898,7 @@ def _plot_main_curve(plt, x, y, err, xlabel, flip_marks, step_marks, config,
     if n_rej:
         sub += f"   ({n_rej} rejected)"
     if measured_noise is not None and np.isfinite(measured_noise):
-        sub += f"   -   error bars = measured noise, {measured_noise:.1f} mmag"
+        sub += f"   -   error bars = point-to-point scatter, {measured_noise:.1f} mmag"
     plt.title(title + "\n" + sub, fontsize=10)
     plt.tight_layout()
     plt.savefig(out_path, dpi=150)
@@ -4831,16 +4910,17 @@ def plot_channel(df, config, out_base, title, flip_marks=None, step_marks=None,
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    measured_noise = curve_noise_mmag(df, measured_noise)
     good = df[df["mag_comp_minus_target"].notna()]
     if good.empty:
         return
     x = good["elapsed_min"]
-    # The error bar shows the noise MEASURED on the comparison stars, not the
-    # one the CCD equation predicts. The formula came out at 4-7 mmag here
-    # while the stars themselves moved by 14 - so the formal bar was both
-    # invisible on the plot and smaller than the real uncertainty, which is the
-    # worse of the two faults. The larger of the two is used, so the bar is
-    # never more confident than the data justify.
+    # The error bar is the scatter MEASURED on the light curve itself (see
+    # curve_noise_mmag), not the one the CCD equation predicts. The formula
+    # came out at 4-7 mmag on one run while the data moved by 14 - so the
+    # formal bar was both invisible on the plot and smaller than the real
+    # uncertainty. The larger of the two is used, so the bar is never more
+    # confident than the data justify.
     err = good.get("mag_comp_minus_target_err")
     err = err.to_numpy(float) if err is not None else np.full(len(good), np.nan)
     if measured_noise is not None and np.isfinite(measured_noise):

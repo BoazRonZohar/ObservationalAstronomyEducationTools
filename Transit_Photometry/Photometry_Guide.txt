@@ -67,7 +67,9 @@ Inside Output_<star name>:
                                BJD could not be computed), whole day
                                subtracted and written on the axis
                                (each point is drawn as its error bar only,
-                               no marker, so a small error stays visible)
+                               no marker, so a small error stays visible;
+                               the bar is the curve's own point-to-point
+                               scatter; orange bars are 5-minute means)
     G_light_curve.xlsx         the light curve as a spreadsheet
     stars_used.png             a chart of the field, target and comparison
                                stars marked
