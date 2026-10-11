@@ -1739,7 +1739,11 @@ def search_prepared(frames, mjds, det, psf_px=3.2, min_snr=8.0,
         if static is not None:
             xi_ = np.clip(np.round(X).astype(int), 0, static.shape[1] - 1)
             yi_ = np.clip(np.round(Y).astype(int), 0, static.shape[0] - 1)
-            off = static[yi_, xi_] < 3.0 * frame_rms
+            # A star counts only where it is as bright as the object itself:
+            # a faint one under a brighter object barely moves its centroid,
+            # and treating every faint star as "on a star" cost the comet of
+            # the 2010 Faulkes frames half of its frames.
+            off = static[yi_, xi_] < np.maximum(3.0, SN) * frame_rms
             if (off.sum() < max(5, int(np.ceil(0.5 * in_field)))
                     or float(np.median(SN[off])) < 5.0):
                 continue
