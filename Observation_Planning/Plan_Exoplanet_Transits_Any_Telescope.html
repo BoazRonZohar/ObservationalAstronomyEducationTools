@@ -451,6 +451,19 @@ function lightTravelDays(ra_deg, dec_deg, jd){
   const cosPsi = Math.sin(d)*Math.sin(sd) + Math.cos(d)*Math.cos(sd)*Math.cos(a - sa);
   return -(R/173.1446)*cosPsi;                                            // days
 }
+// The epoch's clock, which is a separate question from the epoch's position. Gaia's
+// barycentric times run on TCB, NASA's transit epochs on TDB; this page prints UTC. TT runs
+// 32.184 s ahead of atomic time plus the 37 leap seconds in force since 2017, and TCB runs
+// ahead of TT at a fixed rate accumulated since 1977 - about 24 s by 2026. VarAstro's minima
+// are timed by observers against UTC and need no clock correction at all, only the position
+// one. Small beside the light travel, but the uncertainty printed for a well-measured planet
+// can be under half a minute, and 69 s is larger than that.
+const TT_MINUS_UTC = 69.184/86400;                        // days; 32.184 s + 37 leap seconds
+function clockOffsetDays(jd, scale){
+  if(scale === 'tcb') return TT_MINUS_UTC + 1.550519768e-8*(jd - 2443144.5003725);
+  if(scale === 'tdb') return TT_MINUS_UTC;
+  return 0;
+}
 function altAz(ra_deg, dec_deg, jd, lat_deg, lon_deg){
   const lst = gmstHours(jd) + lon_deg/15; // hours
   let H = (lst*15 - ra_deg); // degrees
@@ -608,7 +621,8 @@ function runCalculation(){
     const nMin = Math.floor((nightStart - bufferDays - p.t0)/p.period) - 1;
     const nMax = Math.ceil((nightEnd + bufferDays - p.t0)/p.period) + 1;
     for(let n=nMin; n<=nMax; n++){
-      const midH = p.t0 + n*p.period, midJD = midH - lightTravelDays(p.ra, p.dec, midH);
+      const midH = p.t0 + n*p.period,
+            midJD = midH - lightTravelDays(p.ra, p.dec, midH) - clockOffsetDays(midH, 'tdb');
       const halfDur = p.dur/24/2;
       const startJDt = midJD - halfDur;
       const endJDt = midJD + halfDur;
