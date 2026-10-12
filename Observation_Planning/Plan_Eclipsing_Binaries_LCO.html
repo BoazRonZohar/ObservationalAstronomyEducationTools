@@ -786,8 +786,13 @@ function inHow(jd, from){
 // ---------- stage B: the windows to paste ----------
 function showWindows(s, keepScroll){
   const o = LAST.o, sites = LAST.sites;
-  let t1 = LAST.t1, wins = s.wins, darks = LAST.darks;
+  let t1 = LAST.t1, darks = LAST.darks;
   const limits = sites.map(x=>haLimit(x.lat, s.c[3], o.minAlt));
+  // Rebuilt from the options in force right now, never from the windows carried on
+  // the row. Those were computed during the search, and the padding can have been
+  // changed since: a header reading one padding above a table built with another put
+  // windows into the downloaded request that did not match what was on the screen.
+  let wins = windowsFor(s.c, LAST.t0, t1, o, sites, darks, limits, 60);
   // guarantee at least ten options: widen the horizon until we have them
   let guard = 0;
   while(wins.length < 10 && guard++ < 5){
