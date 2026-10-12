@@ -317,6 +317,23 @@ function sunEquatorial(jd){
   ra = ((ra%360)+360)%360;
   return {ra, dec: Math.asin(Math.sin(eps)*Math.sin(lr))*R2D};
 }
+// The catalogue epochs are not geocentric. VarAstro publishes minima in HJD, Gaia's
+// reference_time is barycentric, NASA's transit epochs are BJD_TDB: every one of them is
+// the moment the light reached the Sun, not the moment it reaches the telescope. The gap
+// is the light's crossing of the Earth's orbit projected on the star - up to 8.3 minutes,
+// reversing every six months, and zero only at the ecliptic poles, so it is not an offset
+// anyone could learn to allow for. Subtracting it turns a catalogue epoch into the clock
+// time an observer waits by. Checked against astropy on RW Tri through a year: agrees to
+// three seconds.
+function lightTravelDays(ra_deg, dec_deg, jd){
+  const n = jd - 2451545.0;
+  const g = ((((357.528 + 0.9856003*n) % 360) + 360) % 360) * D2R;
+  const R = 1.00014 - 0.01671*Math.cos(g) - 0.00014*Math.cos(2*g);        // AU, Earth to Sun
+  const s = sunEquatorial(jd);
+  const a = ra_deg*D2R, d = dec_deg*D2R, sa = s.ra*D2R, sd = s.dec*D2R;
+  const cosPsi = Math.sin(d)*Math.sin(sd) + Math.cos(d)*Math.cos(sd)*Math.cos(a - sa);
+  return -(R/173.1446)*cosPsi;                                            // days
+}
 function altAz(ra_deg, dec_deg, jd, lat_deg, lon_deg){
   const lst = gmstHours(jd) + lon_deg/15;
   let H = (lst*15 - ra_deg);
@@ -420,7 +437,7 @@ function collectEvents(opt){
       const nMin = Math.floor((opt.gStart - base)/P) - 1;
       const nMax = Math.ceil((opt.gEnd - base)/P) + 1;
       for(let n=nMin; n<=nMax; n++){
-        const mid = base + n*P, half = ev.dur/24/2;
+        const half = ev.dur/24/2, midH = base + n*P, mid = midH - lightTravelDays(ra, dec, midH);
         const st = mid - half, en = mid + half;
         if(en < opt.gStart || st > opt.gEnd) continue;
         let sigma = sigRate * Math.abs(mid - tref);
