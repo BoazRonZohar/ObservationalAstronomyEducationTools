@@ -140,6 +140,16 @@ run, all of them searched. If you ask for more, each pass doubles the sampling â
 between the ones already looked at, and the time span never shrinks: how far a
 track moved is what it is judged by, so the full arc is kept at every pass.
 
+**A short run.** Three to five frames are too few to stack along a line, so the
+tool asks at the start of every target which of two methods to use
+(`--method track` or `--method short` answers in advance). The short-run method
+lines the frames up on their stars, takes the median of the frames out of each
+one, and keeps a line from the first frame to the last only when every frame in
+between has something as wide as a star where the line puts it. The tracks are
+reported and identified the same way, and every object gets a red circle on each
+frame and on the mean of all the frames, with its track. It finds only what can
+be seen in every single frame.
+
 **Crowded fields.** Stars that stay put are set aside first, and *every*
 remaining candidate is then searched â€” not only the brightest, because an
 asteroid is usually among the faintest things left. In a rich Milky Way field
@@ -158,14 +168,16 @@ Each run writes to a new `result_<date>_<time>` folder, so an earlier run is
 never overwritten: a `_tracks.txt` with each object's rate, direction (position
 angle, north through east), its position at the middle of the first exposure,
 its measured position and S/N in every frame where it was seen, and the
-identification; one picture per object; and a `run_log.txt` of everything that
-appeared on the screen.
+identification; one picture per object; one picture of all the frames added up,
+with every object ringed in red and its track drawn; and a `run_log.txt` of
+everything that appeared on the screen.
 
 The star width is measured on the first frame, so the tool needs no setting for
 a particular telescope (`--psf_px` overrides it). Frames are sorted by their own
 clock and lined up through their plate solutions, rotation and a meridian flip
-included; frames of one target taken on different nights, or with a different
-binning, are searched as separate runs.
+included, and then on the stars themselves - shift, turn and scale - for the
+frames whose plate solution is off; frames of one target taken on different
+nights, or with a different binning, are searched as separate runs.
 
 ---
 

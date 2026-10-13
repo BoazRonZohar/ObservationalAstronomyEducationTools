@@ -92,6 +92,33 @@ one by its provisional designation.
 
 When it names nothing, there is no link, and that is the interesting case.
 
+With the tracks comes one picture of all the frames added up, lined up on
+the stars, with every object found ringed in red where it was in the first
+frame and in the last and joined by the line it moved along.
+
+A short run
+-----------
+
+All of the above needs a run long enough to stack along a line: six frames
+at the least, and it is built for dozens. Three frames of a comet, taken to
+follow the comet and not to search, are refused outright. For such a run the
+tool offers a second method, asked for at the start of every target (or
+given as --method short):
+
+  1. line the frames up on their STARS - shift, turn and scale, fitted to
+     the stars themselves, whatever the headers say
+  2. take the median of the frames - the sky that does not move - out of
+     each one, so that what is left in a frame is what was elsewhere in the
+     others
+  3. keep a line from the first frame to the last only when every frame in
+     between has something with a star's width where the line says it
+     should be
+
+The tracks are reported and checked against the catalogue exactly as above,
+and every object is marked with a red circle on each frame and on the mean
+of all of them, with its track. It finds only what can be seen in every
+single frame; for anything fainter, take more frames and use the main method.
+
 ----------------------------------------------------------------------
 Created by: Dr. Boaz Ron Zohar
 Affiliation: Kinneret Observatory
@@ -646,6 +673,76 @@ def star_offset(ref_xy, xy, reach=250.0):
     return np.median(near, axis=0), len(near)
 
 
+def bright_stars(sub, n=60):
+    """The `n` brightest stars of a background-subtracted frame, brightest
+    first, as an (n, 2) array of x, y - for `star_map` to match.
+
+    Found as patches of light on the frame with every pixel replaced by the
+    median of its 3x3 neighbourhood, which takes the cosmic rays out and
+    leaves the stars. On three of the 2010 comet frames the 60 brightest
+    sources DAOStarFinder gives could not be matched between frames at all;
+    found this way, 29 and 39 stars match to 0.3 px."""
+    from scipy.ndimage import median_filter
+    m = gaussian_filter(median_filter(sub, 3), 1.5)
+    lab, _n = label(m > 10.0 * noise_of(m))
+    out = []
+    for i, sl in enumerate(find_objects(lab), start=1):
+        if sl is None:
+            continue
+        v = np.where(lab[sl] == i, m[sl], 0.0)
+        gy, gx = np.mgrid[sl[0], sl[1]]
+        t = v.sum()
+        out.append(((v * gx).sum() / t, (v * gy).sum() / t, t))
+    if not out:
+        return np.zeros((0, 2))
+    out = np.array(out)
+    return out[np.argsort(-out[:, 2])][:n, :2]
+
+
+def star_map(ref_xy, xy):
+    """The affine map from one list of stars to another - from the
+    reference frame's pixels to this frame's - fitted to the stars alone:
+    (cx, cy, stars it rests on, their scatter about it in pixels).
+
+    The stars are matched as triangles, so the shift, the turn and the scale
+    all come from the stars themselves, whatever the header says. On three of
+    the 2010 Faulkes comet frames (headed C/2007 S2; the comet in them is
+    C/2006 S3, LONEOS) one header has no CD matrix and sits 110 px and 0.64
+    degrees away from the other two. The turn spreads the stars' offsets over
+    12 px, so no six of them agree on one SHIFT (`star_offset`), and that
+    frame used to be lined up by its header alone - 110 px off."""
+    import astroalign
+    T, (src, dst) = astroalign.find_transform(ref_xy, xy)
+    m = np.asarray(T.params, float)
+    res = np.hypot(*(T(src) - dst).T)
+    return m[0].copy(), m[1].copy(), len(src), float(np.median(res))
+
+
+def onto_stars(ref_bright, raw, cx, cy):
+    """The plate solution's map (cx, cy) corrected onto the stars.
+
+    `raw` is the frame as the plate solution lines it up. Its bright stars
+    are matched to the reference frame's (`star_map`), which measures what is
+    left of its offset, turn and scale, and the two maps are joined into one.
+    Returns (cx, cy, how far the correction moves the frame at its corners in
+    pixels, the turn in degrees, the stars it rests on), or None when the
+    stars cannot be matched - fewer than six, or scattered by more than
+    1.5 px - and only the shift can be corrected, as before."""
+    try:
+        rx, ry, nst, scatter = star_map(ref_bright, bright_stars(raw))
+    except Exception:
+        return None
+    if nst < 6 or scatter > 1.5:
+        return None
+    R = np.vstack([rx, ry, [0.0, 0.0, 1.0]])
+    M = np.vstack([cx, cy, [0.0, 0.0, 1.0]]) @ R
+    ny, nx = raw.shape
+    c = np.array([[0, 0], [nx - 1, 0], [0, ny - 1], [nx - 1, ny - 1]], float)
+    moved = float(np.hypot(*(c @ R[:2, :2].T + R[:2, 2] - c).T).max())
+    turn = float(np.degrees(np.arctan2(R[1, 0], R[0, 0])))
+    return M[0], M[1], moved, turn, nst
+
+
 FIX_CRPIX = True
 
 
@@ -688,6 +785,7 @@ def prepare(paths, psf_px, threshold, min_usable=5, verbose=True):
                       f"{img.shape[0]} px, the run is {rs[1]}x{rs[0]}")
             return None
         cx, cy = to_reference(w, state["ref_w"], state["ref_shape"])
+        on_stars = False
         for _try in range(2):
             aligned = align(img, cx, cy)
             cover = np.isfinite(aligned)
@@ -708,12 +806,36 @@ def prepare(paths, psf_px, threshold, min_usable=5, verbose=True):
             # mover. Each frame's bright stars are compared with the first
             # frame's; when they all sit off by the same amount, the frame is
             # moved onto them.
+            #
+            # The same amount was not enough. On three of those frames one
+            # header is also turned by 0.64 degrees against the others, the
+            # turn spreads the offsets over 12 px, no six stars agreed on one
+            # shift, and that frame stayed 110 px off. So the stars are first
+            # matched as triangles, which measures the turn and the scale with
+            # the shift (`onto_stars`); the shift alone is the fallback, for
+            # frames whose stars cannot be matched that way.
             gx, gy, gf = find_sources(raw, psf_px or 3.2, 15.0 * rms_raw)
             top = np.argsort(-gf)[:150]
             xy = np.c_[gx[top], gy[top]]
             if state.get("ref_stars") is None:
                 state["ref_stars"] = xy
+                state["ref_bright"] = bright_stars(raw)
                 break
+            if on_stars:
+                break
+            if not _try:
+                fit = onto_stars(state["ref_bright"], raw, cx, cy)
+                if fit is not None:
+                    fcx, fcy, moved, turn, nst = fit
+                    if moved <= 0.5:
+                        break
+                    if verbose:
+                        print(f"\n    {os.path.basename(p)}: plate solution "
+                              f"{moved:.1f} px off the stars, turned "
+                              f"{turn:+.2f} deg ({nst} stars agree) - lined "
+                              f"up on the stars")
+                    cx, cy, on_stars = fcx, fcy, True
+                    continue
             off = star_offset(state["ref_stars"], xy)
             if off is None or _try:
                 if off is None and verbose and len(state["ref_stars"]) >= 6:
@@ -1380,6 +1502,98 @@ def draw_objects(objs, frames, hours, px, stem, tag=""):
             print(f"  could not draw object {k}: {e}")
 
 
+def draw_field(img, title, marks, fname, rad):
+    """One whole image with the objects ringed in red, saved as `fname`.
+
+    `marks` holds (label, points, numbers) for each object: a circle of
+    radius `rad` on every point and a line through them, the label beside the
+    last point, and beside each point the frame it belongs to when `numbers`
+    is given."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from astropy.visualization import ZScaleInterval, AsinhStretch, ImageNormalize
+    ny, nx = img.shape
+    s = min(1.0, 2048.0 / max(nx, ny))
+    fig = plt.figure(figsize=(nx * s / 100.0, ny * s / 100.0), dpi=100)
+    ax = fig.add_axes([0, 0, 1, 1])
+    ok = np.isfinite(img)
+    norm = ImageNormalize(img[ok], interval=ZScaleInterval(),
+                          stretch=AsinhStretch(0.3))
+    ax.imshow(np.where(ok, img, np.nanmedian(img)), origin="lower", cmap="gray",
+              norm=norm)
+    for label_k, pts, numbers in marks:
+        for x, y in pts:
+            ax.add_patch(plt.Circle((x, y), rad, fill=False, ec="red", lw=1.8))
+        if len(pts) > 1:
+            ax.plot(pts[:, 0], pts[:, 1], "-", color="red", lw=1.0, alpha=0.8)
+        for e, (x, y) in zip(numbers if numbers is not None else [], pts):
+            ax.text(x + 0.8 * rad, y - 0.8 * rad, str(e), color="yellow",
+                    fontsize=10)
+        x, y = pts[-1]
+        # on whichever side of the object has room for it
+        right = x < 0.5 * nx
+        ax.text(x + (1.2 if right else -1.2) * rad, y + 0.5 * rad, label_k,
+                color="red", fontsize=13, weight="bold",
+                ha="left" if right else "right")
+    ax.text(0.01, 0.99, title, transform=ax.transAxes, color="white",
+            fontsize=12, va="top", bbox=dict(fc="black", alpha=0.6))
+    ax.set_xlim(-0.5, nx - 0.5)
+    ax.set_ylim(-0.5, ny - 0.5)
+    ax.axis("off")
+    fig.savefig(fname)
+    plt.close(fig)
+
+
+def mean_of(frames, rows=64):
+    """The mean of all frames - stars and everything that moved, together.
+    Read in strips, like `static_sky`."""
+    n, ny, nx = frames.shape
+    out = np.zeros((ny, nx), np.float32)
+    for r0 in range(0, ny, rows):
+        out[r0:r0 + rows] = np.mean(np.asarray(frames[:, r0:r0 + rows, :]),
+                                    axis=0)
+    return out
+
+
+def catalogue_names(report):
+    """What the catalogue called each object, by its number, read back from
+    the lines `report_objects` wrote."""
+    names, k = {}, 0
+    for ln in report:
+        if ln.startswith("object "):
+            k += 1
+        elif ln.strip().startswith("identified: ") and k:
+            nm = ln.strip()[len("identified: "):].split(" - ")[0]
+            # a comet comes back as "(C/2006 S3 (LONEOS)) C/2006 S3": the
+            # part in brackets is its whole name
+            m = re.match(r"^\((.*/.*)\) ", nm)
+            names[k] = m.group(1) if m else nm
+    return names
+
+
+def draw_stack(objs, frames, hours, names, stem):
+    """All the frames added up, with every object found marked on them: a
+    circle where it was in the first frame and in the last, and the line it
+    moved along between them. Drawn whether anything was found or not - the
+    added-up field is worth looking at either way."""
+    try:
+        img = mean_of(frames)
+        n = frames.shape[0]
+        marks = []
+        for k, o in enumerate(objs, 1):
+            pts = np.array([[o["x0"] + o["vx"] * t, o["y0"] + o["vy"] * t]
+                            for t in (hours[0], hours[-1])])
+            marks.append((f"object {k}" + (f": {names[k]}" if k in names else ""),
+                          pts, (1, n)))
+        draw_field(img, f"mean of the {n} frames, lined up on the stars - each "
+                        f"object from frame 1 to frame {n}",
+                   marks, f"{stem}_stack_marked.png",
+                   rad=max(10.0, 0.012 * max(img.shape)))
+    except Exception as e:
+        print(f"  could not draw the frames added up: {e}")
+
+
 def quick_look(paths, idx, args, stem=None, px_scale=1.0, verbose_depth=True):
     """A real search, on a handful of frames spread through the stretch.
 
@@ -1436,6 +1650,8 @@ def quick_look(paths, idx, args, stem=None, px_scale=1.0, verbose_depth=True):
         if stem and objs:
             draw_objects(objs, frames, hrs, px_scale, stem,
                          tag=" (quick look)")
+        if stem:
+            draw_stack(objs, frames, hrs, {}, stem)
         return objs, hrs, np.sort(mjds), ref_w, frames.shape[0]
     finally:
         del frames
@@ -1494,6 +1710,7 @@ def quick_session(paths, args, px_scale, out_stem):
                   "look to measure them properly)")
         else:
             print("  NOT FOUND in this sample")
+        print(f"  -> {stem}_stack_marked.png, the frames added up")
         # The ladder ends where the sample IS the run. There is no denser
         # look left to offer, and by then the quick look has quietly become
         # the full search.
@@ -1511,6 +1728,356 @@ def quick_session(paths, args, px_scale, out_stem):
         # 2n-1, not 2n: the new frames fall exactly midway between the ones
         # already read, so the previous sample survives whole inside the next.
         n = nxt
+
+
+# --------------------------------------------------------------------------
+# a short run
+# --------------------------------------------------------------------------
+
+def choose_method(args, n_frames):
+    """Which method this target gets: --method when it was given, else asked.
+
+    The answer is a digit and not a letter. A y/n question answered on a
+    Hebrew keyboard gets a Hebrew letter; a digit is the same key in every
+    layout."""
+    if args.method:
+        return args.method
+    default = "2" if n_frames < 6 else "1"
+    print("  Two methods:")
+    print("    1  track and stack along the motion - many frames, objects too "
+          "faint to see in any one of them (needs 6 frames or more)")
+    print("    2  a short run - 3 to 5 frames, objects seen in every one of them")
+    while True:
+        try:
+            ans = input(f"  Which method? [1/2, Enter = {default}]: ").strip()
+        except EOFError:
+            ans = ""
+        ans = ans or default
+        if ans in ("1", "2"):
+            break
+        print(f"    '{ans}' is not 1 or 2 - please answer 1 or 2")
+    # said again, so that run_log.txt records the answer and not only the
+    # question
+    print(f"  method {ans}: " + ("track and stack" if ans == "1" else "a short run"))
+    return "track" if ans == "1" else "short"
+
+
+def centroid_at(img, x, y, psf_px):
+    """The centre of light of the source near (x, y): (x, y), or None at the
+    edge of the frame.
+
+    Measured on the frame itself, not on its difference from the median: a
+    comet's coma reaches into the place it has just left, so the median taken
+    out of one frame holds the edge of the coma of the others. Each pixel of
+    the cut-out is replaced by the median of its 3x3 neighbourhood first, so
+    that a cosmic ray landing on the object cannot pull its centre."""
+    from scipy.ndimage import median_filter
+    r = max(4, int(round(0.8 * psf_px)))
+    pad = r + 3
+    for _ in range(5):
+        xi, yi = int(round(x)), int(round(y))
+        if (xi - pad < 0 or yi - pad < 0 or xi + pad >= img.shape[1]
+                or yi + pad >= img.shape[0]):
+            return None
+        c = np.asarray(img[yi - pad:yi + pad + 1, xi - pad:xi + pad + 1], float)
+        c = gaussian_filter(median_filter(c, 3), max(1.0, 0.2 * psf_px))[3:-3, 3:-3]
+        c = c - np.median(c)
+        c[c < 0] = 0
+        t = c.sum()
+        if t <= 0:
+            return None
+        gy, gx = np.mgrid[yi - r:yi + r + 1, xi - r:xi + r + 1]
+        x, y = (c * gx).sum() / t, (c * gy).sum() / t
+    return x, y
+
+
+def draw_short(objs, names, paths, maps, frames, count, mjds, stem, psf_px):
+    """Every frame as it was taken, with a red circle on each object, and the
+    mean of all the frames with each object at every epoch and its track.
+    `names` holds what the catalogue called each object, by its number."""
+    rad = 3.0 * psf_px
+
+    def label_of(j):
+        return f"object {j}" + (f": {names[j]}" if j in names else "")
+
+    for k, p in enumerate(paths if objs else []):
+        try:
+            img, _h = image_and_header(p)
+            # the frame as it was taken, so each position is carried back
+            # from the reference grid to the frame's own pixels
+            cx, cy = maps[k]
+            marks = [(label_of(j),
+                      np.array([[cx[0] * o["X"][k] + cx[1] * o["Y"][k] + cx[2],
+                                 cy[0] * o["X"][k] + cy[1] * o["Y"][k] + cy[2]]]),
+                      None)
+                     for j, o in enumerate(objs, 1)]
+            base = re.sub(r"[^A-Za-z0-9_]+", "_",
+                          os.path.splitext(os.path.basename(p))[0]).strip("_")
+            draw_field(img, f"{os.path.basename(p)}   "
+                            f"{Time(mjds[k], format='mjd').isot[:19]} UTC, "
+                            f"middle of the exposure",
+                       marks, f"{stem}_{base}_marked.png", rad)
+        except Exception as e:
+            print(f"  could not draw {os.path.basename(p)}: {e}")
+    try:
+        mean = frames.sum(axis=0) / np.maximum(count, 1)
+        mean[count == 0] = np.nan
+        n = len(paths)
+        draw_field(mean, f"mean of the {n} frames, lined up on the stars"
+                         f" - the numbers are the frames in time order",
+                   [(label_of(j), np.c_[o["X"], o["Y"]], range(1, n + 1))
+                    for j, o in enumerate(objs, 1)],
+                   f"{stem}_stack_marked.png", rad)
+    except Exception as e:
+        print(f"  could not draw the frames added up: {e}")
+
+
+def short_run(paths, args, stem, target):
+    """The second method, for a run of three to five frames.
+
+    There is no faint end to reach in so few frames, so the question is a
+    simpler one: what is in every frame, and never in the same place twice?
+
+      1. The frames are lined up on their stars (see `star_map`).
+      2. The median of the frames - the sky that does not move - is taken out
+         of each one. What is left in a frame is what was elsewhere in the
+         others.
+      3. What is left is found on the frame smoothed to the stars' width, and
+         only what has a star's width is kept, by the same test as in the
+         main method: a cosmic ray is narrower, a satellite is a line.
+      4. A line from a detection in the first frame to one in the last is
+         kept only when every frame between them has a detection where the
+         line says it should be.
+      5. Each position is measured again on the frame itself and the line is
+         fitted to them. As in the main method, a track that moved less than
+         three star widths, or sat on a star in most of its frames, is not an
+         object. On the three 2010 comet frames the stars' own images are a
+         little wider in one frame than in the others, which leaves a ring
+         around every bright star in the differences; parts of those rings
+         line up into "tracks" 7 px long, on a star, in every frame.
+    """
+    from scipy.ndimage import maximum_filter, median_filter
+    print("  a short run: lining the frames up on their stars")
+    psf_px = args.psf_px
+    ref_w = ref_shape = ref_xy = level = None
+    frames, covers, maps, mjds, used, noise = [], [], [], [], [], []
+    for p in paths:
+        name = os.path.basename(p)
+        try:
+            img, h = image_and_header(p)
+            w = build_wcs(h, fix_crpix=FIX_CRPIX)
+            mjd = frame_mjd(h)
+        except Exception as e:
+            print(f"    skipped {name}: {e}")
+            continue
+        if not np.isfinite(mjd):
+            print(f"    skipped {name}: no time of observation in its header")
+            continue
+        if ref_shape is not None and img.shape != ref_shape:
+            print(f"    skipped {name}: {img.shape[1]}x{img.shape[0]} px, "
+                  f"the run is {ref_shape[1]}x{ref_shape[0]}")
+            continue
+        if ref_shape is None and len(paths) * img.size * 6 > 1.5e9:
+            # every frame is held in memory at once, which is the right
+            # trade for a handful of frames and the wrong one for a night
+            print(f"    {len(paths)} frames of {img.shape[1]}x{img.shape[0]} "
+                  f"px are too many for the short-run method - use method 1")
+            return
+        cover = np.isfinite(img)
+        fill = float(np.nanmedian(img))
+        sub = np.where(cover, img - sky_background(np.where(cover, img, fill),
+                                                   cover), np.nan)
+        xy = bright_stars(np.nan_to_num(sub))
+        if ref_w is None:
+            ref_w, ref_shape, ref_xy = w, img.shape, xy
+            level = saturation_level(h, img)[0]
+            cx, cy = np.array([1.0, 0.0, 0.0]), np.array([0.0, 1.0, 0.0])
+            al = sub
+        else:
+            try:
+                cx, cy, nst, scatter = star_map(ref_xy, xy)
+                print(f"    {name}: lined up on {nst} stars, "
+                      f"{scatter:.2f} px scatter")
+            except Exception as e:
+                cx, cy = to_reference(w, ref_w, ref_shape)
+                print(f"    {name}: its stars could not be matched to the first "
+                      f"frame's ({e}) - lined up by the plate solution alone")
+            al = align(sub, cx, cy)
+        c = np.isfinite(al)
+        frames.append(np.where(c, al, 0.0).astype(np.float32))
+        covers.append(c)
+        maps.append((cx, cy))
+        mjds.append(mjd)
+        used.append(p)
+        noise.append(noise_of(frames[-1], c))
+    n = len(frames)
+    if n < 3:
+        print("  Too few usable frames.")
+        return
+    if psf_px is None:
+        fw, nst = measure_psf([(frames[k], noise[k]) for k in range(3)], level)
+        if np.isfinite(fw):
+            psf_px = fw
+            print(f"    star width (FWHM) measured on {nst} stars of the first "
+                  f"frame: {fw:.2f} px = {fw * pixel_scale_of(ref_w):.2f} arcsec")
+        else:
+            psf_px = 3.2
+            print(f"    too few clean stars to measure their width ({nst}); "
+                  f"using 3.2 px - give --psf_px if that is wrong for this "
+                  f"telescope")
+
+    frames = np.array(frames)
+    count = np.sum(covers, axis=0)
+    common = count == n
+    del covers
+    static = np.median(frames, axis=0)
+    mjds = np.array(mjds)
+    hours = (mjds - mjds[0]) * 24.0
+    span = hours[-1]
+    px = pixel_scale_of(ref_w)
+    if not np.isfinite(px):
+        px = 1.0
+    sw = psf_px / 2.3548
+    edge = int(np.ceil(2 * psf_px))
+    static_s = gaussian_filter(static, sw)
+
+    det, rms_s = [], []
+    for k in range(n):
+        # Each pixel of the difference is replaced by the median of its 3x3
+        # neighbourhood before anything is looked for. A cosmic ray that
+        # lands ON an object is otherwise its brightest point, and the width
+        # test then measures the ray and throws the object away: one lands
+        # on the comet in the third 2010 frame, 5800 counts against the
+        # coma's 120, and the comet was lost from the whole run.
+        d = median_filter(np.where(common, frames[k] - static, 0.0), 3)
+        ds = gaussian_filter(d, sw)
+        # the noise of the image the threshold is applied to - the smoothed
+        # one - and not of the frame before smoothing
+        rms_s.append(noise_of(ds, common))
+        # Peaks, not patches. Above the threshold a comet's coma is one
+        # patch of two thousand pixels, and the centre of the patch sat
+        # 7 to 11 px from the nucleus.
+        peak = ((ds == maximum_filter(ds, size=2 * int(round(psf_px)) + 1))
+                & (ds > args.threshold * rms_s[k]) & common)
+        kept = 0
+        for yi, xi in zip(*np.nonzero(peak)):
+            if not common[max(yi - edge, 0):yi + edge + 1,
+                          max(xi - edge, 0):xi + edge + 1].all():
+                continue
+            sh = short_axis(d, xi, yi, psf_px)
+            if sh is None:
+                continue
+            L, W = sh
+            if W < 0.55 * psf_px or L > 3.0 * max(W, 1e-6):
+                continue
+            det.append((k, xi, yi, ds[yi, xi] / rms_s[k], ds[yi, xi]))
+            kept += 1
+        print(f"    frame {k + 1}: {kept} things with a star's width that were "
+              f"not there in the other frames")
+    det = np.array(det).reshape(-1, 5)
+
+    debug = bool(os.environ.get("MO_DEBUG"))
+
+    def _why(x, y, reason):
+        if debug:
+            print(f"    [debug] rejected line from ({x:.0f},{y:.0f}) px: {reason}")
+
+    tol = max(2.0, 0.6 * psf_px)
+    min_move = 3.0 * psf_px
+    max_move = args.max_rate / px * span
+    by = [det[det[:, 0] == k] for k in range(n)]
+    trees = [cKDTree(b[:, 1:3]) if len(b) else None for b in by]
+    lines = []
+    if trees[-1] is not None:
+        for a in by[0]:
+            for j in trees[-1].query_ball_point(a[1:3], max_move):
+                c = by[-1][j]
+                if np.hypot(c[1] - a[1], c[2] - a[2]) < min_move:
+                    continue
+                v = (c[1:3] - a[1:3]) / span
+                pts = [a]
+                for k in range(1, n - 1):
+                    if trees[k] is None:
+                        break
+                    dd, ii = trees[k].query(a[1:3] + v * hours[k])
+                    if dd > tol:
+                        break
+                    pts.append(by[k][ii])
+                else:
+                    pts.append(c)
+                    lines.append(np.array(pts))
+    print(f"    {len(lines)} lines through all {n} frames")
+
+    objs = []
+    need_empty = max(2, int(np.ceil(0.5 * n)))
+    for pts in lines:
+        xy = [centroid_at(frames[k], pts[k, 1], pts[k, 2], psf_px)
+              for k in range(n)]
+        if any(q is None for q in xy):
+            _why(pts[0, 1], pts[0, 2], "runs off the edge of a frame")
+            continue
+        X, Y = np.array(xy).T
+        SN = pts[:, 3]
+        fx, fy = np.polyfit(hours, X, 1), np.polyfit(hours, Y, 1)
+        res = np.hypot(X - np.polyval(fx, hours), Y - np.polyval(fy, hours))
+        rms_px = float(np.sqrt(np.mean(res ** 2)))
+        moved = float(np.hypot(fx[0], fy[0]) * span)
+        if moved < min_move:
+            _why(X[0], Y[0], f"moved {moved:.1f} px < 3 star widths")
+            continue
+        if rms_px > max(1.0, 0.3 * psf_px):
+            _why(X[0], Y[0], f"scatter {rms_px:.2f} px about its line")
+            continue
+        if float(np.median(SN)) < 5.0:
+            _why(X[0], Y[0], f"median S/N {np.median(SN):.1f}")
+            continue
+        # On empty sky, or on a star no brighter than the object itself, in
+        # most of its frames: the same test as in the main method, read from
+        # the median of the frames smoothed as the differences were.
+        xi = np.clip(np.round(X).astype(int), 0, static.shape[1] - 1)
+        yi = np.clip(np.round(Y).astype(int), 0, static.shape[0] - 1)
+        off = static_s[yi, xi] < np.maximum(3.0 * np.array(rms_s), pts[:, 4])
+        if off.sum() < need_empty:
+            _why(X[0], Y[0], f"on empty sky in {int(off.sum())} of {n} frames")
+            continue
+        # The S/N of the frames added up along the track, on the same scale as
+        # each frame's: the smoothed differences at the object, summed, over
+        # their noise summed in quadrature.
+        stacked = float(pts[:, 4].sum() / np.sqrt(np.sum(np.square(rms_s))))
+        objs.append(dict(n=n, n_field=n, vx=fx[0], vy=fy[0],
+                         x0=np.polyval(fx, 0.0), y0=np.polyval(fy, 0.0),
+                         rms_px=rms_px, snr=stacked,
+                         snr_frame=float(np.median(SN)), SN=SN, lines=1,
+                         X=X, Y=Y, T=hours.copy(), moved_px=moved,
+                         sig=moved / max(rms_px, 1e-3)))
+    # one object, many lines: each detection of it in the first frame can
+    # pair with more than one in the last
+    kept = []
+    for o in sorted(objs, key=lambda z: -z["snr_frame"]):
+        if not any(np.hypot(o["X"][0] - m["X"][0], o["Y"][0] - m["Y"][0]) < 2 * psf_px
+                   and np.hypot(o["X"][-1] - m["X"][-1],
+                                o["Y"][-1] - m["Y"][-1]) < 2 * psf_px
+                   for m in kept):
+            kept.append(o)
+    objs = sorted(kept, key=lambda z: -z["sig"])
+
+    if not objs:
+        print("  nothing moved in a straight line at a steady rate")
+    report = report_objects(objs, ref_w, mjds[0], n, args)
+    for ln in report:
+        print("  " + ln)
+    with open(stem + "_tracks.txt", "w", encoding="utf-8") as fh:
+        fh.write(f"{target}" + NL + "short run: the median of the frames taken "
+                 "out of each, one line through every frame; S/N is measured "
+                 "on the differences smoothed to the stars' width" + NL +
+                 f"{n} frames over {span:.3f} h, times are mid-exposure UTC, "
+                 f"first frame MJD {mjds[0]:.6f}" + NL + NL)
+        fh.write(NL.join(report) + NL)
+    draw_short(objs, catalogue_names(report), used, maps, frames, count, mjds,
+               stem, psf_px)
+    print(f"  -> {stem}_tracks.txt"
+          + (", a marked copy of every frame" if objs else "")
+          + f" and {stem}_stack_marked.png, the frames added up")
 
 
 # --------------------------------------------------------------------------
@@ -2029,6 +2596,12 @@ def main():
                          "which is where an asteroid is")
     ap.add_argument("--min_snr", type=float, default=8.0,
                     help="how strong the stacked object must be")
+    ap.add_argument("--method", choices=("track", "short"), default=None,
+                    help="track: stack along the motion, for many frames and "
+                         "objects too faint for any one of them (6 frames or "
+                         "more). short: the median of the frames taken out "
+                         "and one line through every frame, for 3 to 5 "
+                         "frames. Asked for each target when not given")
     args = ap.parse_args()
     FIX_CRPIX = not args.keep_crpix
 
@@ -2072,6 +2645,12 @@ def main():
         raise SystemExit("No plate-solved frames with an OBJECT keyword found.")
     for t, ps in sorted(targets.items()):
         print(f"\n{t}  -  {len(ps)} frames")
+        if len(ps) < 3:
+            print("  too few frames"); continue
+        stem = os.path.join(args.output_dir, re.sub(r"[^A-Za-z0-9_]+", "_", t).strip("_"))
+        if choose_method(args, len(ps)) == "short":
+            short_run(ps, args, stem, t)
+            continue
         if len(ps) < 6:
             print("  too few frames"); continue
         # Asked, not switched. --quick was a command-line flag, and this is run
@@ -2093,7 +2672,6 @@ def main():
                     break
                 print(f"    '{ans}' is not y or n - please answer y or n "
                       f"(check the keyboard language)")
-        stem = os.path.join(args.output_dir, re.sub(r"[^A-Za-z0-9_]+", "_", t).strip("_"))
         if quick:
             try:
                 pxs = pixel_scale_of(build_wcs(frame_header(ps[0]), fix_crpix=False))
@@ -2121,7 +2699,9 @@ def main():
                          f"first frame MJD {mjds[0]:.6f}" + NL + NL)
                 fh.write(NL.join(lines) + NL)
             draw_objects(objs, frames, hours, px, stem)
-            print(f"  -> {stem}_tracks.txt")
+            draw_stack(objs, frames, hours, catalogue_names(lines), stem)
+            print(f"  -> {stem}_tracks.txt and {stem}_stack_marked.png, the "
+                  f"frames added up")
         finally:
             del frames
             try:
